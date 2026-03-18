@@ -26,7 +26,7 @@ export default function App() {
   const [cloudModels, setCloudModels]   = useState([])
   const [selectedFiles, setSelectedFiles] = useState([]) // For explicitly included context
   const [localModels, setLocalModels]   = useState([])
-  const [model, setModel]               = useState('ollama/deepseek-coder-v2:236b')
+  const [model, setModel]               = useState('ollama/deepseek-v3.1:671b-cloud')
   const [ollamaOnline, setOllamaOnline] = useState(false)
   const [showTerminal, setShowTerminal] = useState(true)
   const [showFiles, setShowFiles]       = useState(true)
@@ -57,11 +57,6 @@ export default function App() {
         setOllamaOnline(d.online !== false)
         setCloudModels(d.cloud || [])
         setLocalModels(d.local  || [])
-        // Auto-select first cloud model if current model is a local one
-        const firstCloud = (d.cloud || [])[0]
-        if (firstCloud && !model.includes('cloud')) {
-          setModel(`ollama/${firstCloud}`)
-        }
       }).catch(() => setOllamaOnline(false))
     check()
     const t = setInterval(check, 10000)
@@ -226,17 +221,23 @@ export default function App() {
             style={{ backgroundImage: `url('data:image/svg+xml;utf8,<svg fill="%23888" height="16" viewBox="0 0 24 24" width="16" xmlns="http://www.w3.org/2000/svg"><path d="M7 10l5 5 5-5z"/></svg>')`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 4px center' }}>
             {cloudModels.length > 0 ? (
               <optgroup label="☁️ Massive Cloud Models">
-                {cloudModels.map(m => <option key={m} value={`ollama/${m}`}>✨ {m}</option>)}
+                {cloudModels.map(m => <option key={m} value={`ollama/${m}`}>☁ {m}</option>)}
               </optgroup>
             ) : (
               <optgroup label="☁️ Massive Cloud Models">
-                <option value="ollama/deepseek-coder-v2:236b">✨ deepseek-coder-v2:236b</option>
-                <option value="ollama/qwen2.5-coder:32b">✨ qwen2.5-coder:32b</option>
+                <option value="ollama/gpt-oss:120b-cloud">☁ gpt-oss:120b-cloud</option>
+                <option value="ollama/gpt-oss:20b-cloud">☁ gpt-oss:20b-cloud</option>
+                <option value="ollama/deepseek-v3.1:671b-cloud">☁ deepseek-v3.1:671b-cloud</option>
+                <option value="ollama/qwen3-coder:480b-cloud">☁ qwen3-coder:480b-cloud</option>
+                <option value="ollama/qwen3-vl:235b-cloud">☁ qwen3-vl:235b-cloud</option>
+                <option value="ollama/minimax-m2:cloud">☁ minimax-m2:cloud</option>
+                <option value="ollama/alm-4.6:cloud">☁ alm-4.6:cloud</option>
                 <option value="ollama/gpt-4o-proxy">✨ gpt-4o-proxy</option>
                 <option value="ollama/claude-3.5-sonnet-proxy">✨ claude-3.5-sonnet-proxy</option>
                 <option value="ollama/jules-proxy">✨ jules-proxy</option>
               </optgroup>
             )}
+            {/* If local models exist but user doesn't want them, they still load below the cloud ones so they are out of the way */}
             {localModels.length > 0 && (
               <optgroup label="💻 Local Downloaded Models">
                 {localModels.map(m => <option key={m} value={`ollama/${m}`}>💻 {m}</option>)}

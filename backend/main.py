@@ -546,16 +546,13 @@ async def git_undo(path: str):
 mdl = APIRouter(prefix="/api/models")
 
 CLOUD_MODELS = [
-    "deepseek-coder-v2:236b",
+    "gpt-oss:120b-cloud",
+    "gpt-oss:20b-cloud",
     "deepseek-v3.1:671b-cloud",
-    "qwen2.5-coder:32b",
-    "qwen2.5:72b",
-    "llama3.1:405b",
-    "llama3.1:70b",
-    "mixtral:8x22b",
-    "command-r-plus:104b",
-    "gemma2:27b",
-    "phi3.5:14b",
+    "qwen3-coder:480b-cloud",
+    "qwen3-vl:235b-cloud",
+    "minimax-m2:cloud",
+    "alm-4.6:cloud",
     "gpt-4o-proxy",
     "claude-3.5-sonnet-proxy",
     "jules-proxy"
