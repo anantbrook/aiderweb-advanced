@@ -1,0 +1,625 @@
+import asyncio
+import json
+import os
+import sys
+import socket
+import subprocess
+import urllib.request
+from pathlib import Path
+from pydantic import BaseModel
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, APIRouter
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+import uvicorn
+
+app = FastAPI(title="AiderWeb")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+PROJECTS_FILE = Path.home() / ".aiderwebapp" / "projects.json"
+DEFAULT_MODEL  = "ollama/qwen3-coder:480b-cloud"
+
+# Shared skip set — used everywhere, defined once
+SKIP = {'node_modules', '__pycache__', '.git', '.next', 'dist', 'build', '.venv', 'venv', '.cache'}
+
+
+# ── Helpers ────────────────────────────────────
+def get_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except:
+        return "localhost"
+
+def run_cmd(cmd, cwd=None, timeout=10):
+    try:
+        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+        return r.stdout.strip()
+    except:
+        return ""
+
+
+# ── File System ────────────────────────────────
+fs = APIRouter(prefix="/api/fs")
+
+@fs.get("/list")
+async def list_dir(path: str):
+    try:
+        p = Path(path)
+        if not p.exists() or not p.is_dir():
+            return {"error": "Not a directory"}
+        items = []
+        for item in sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
+            if item.name.startswith('.') or item.name in SKIP:
+                continue
+            items.append({
+                "name":  item.name,
+                "path":  str(item).replace("\\", "/"),
+                "isDir": item.is_dir(),
+                "ext":   item.suffix.lower()
+            })
+        return {"items": items}
+    except Exception as e:
+        return {"error": str(e)}
+
+@fs.get("/read")
+async def read_file(path: str):
+    try:
+        return {"content": Path(path).read_text(encoding="utf-8", errors="replace")}
+    except Exception as e:
+        return {"error": str(e)}
+
+class WriteBody(BaseModel):
+    path: str
+    content: str
+
+@fs.post("/write")
+async def write_file(body: WriteBody):
+    try:
+        p = Path(body.path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body.content, encoding="utf-8")
+        return {"ok": True}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ── Projects ───────────────────────────────────
+proj = APIRouter(prefix="/api/projects")
+
+@proj.get("")
+async def get_projects():
+    try:
+        if PROJECTS_FILE.exists():
+            return json.loads(PROJECTS_FILE.read_text())
+        return []
+    except:
+        return []
+
+class Project(BaseModel):
+    name: str
+    path: str
+
+@proj.post("")
+async def save_projects(projects: list[Project]):
+    PROJECTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    PROJECTS_FILE.write_text(json.dumps([p.dict() for p in projects]))
+    return {"ok": True}
+
+
+# ── Git ────────────────────────────────────────
+git = APIRouter(prefix="/api/git")
+
+@git.get("/status")
+async def git_status(path: str):
+    return {
+        "branch": run_cmd(["git", "branch", "--show-current"], cwd=path),
+        "status": run_cmd(["git", "status", "--short"],        cwd=path),
+        "log":    run_cmd(["git", "log", "--oneline", "-8"],   cwd=path),
+    }
+
+
+# ── Models ─────────────────────────────────────
+mdl = APIRouter(prefix="/api/models")
+
+@mdl.get("")
+async def get_models():
+    """Return all installed models split into cloud vs local."""
+    try:
+        with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=3) as r:
+            data   = json.loads(r.read())
+            all_m  = [m["name"] for m in data.get("models", [])]
+            cloud  = [m for m in all_m if "cloud" in m]
+            local  = [m for m in all_m if "cloud" not in m]
+            return {"models": cloud + local, "cloud": cloud, "local": local, "online": True}
+    except:
+        # Ollama offline — return known cloud model names so UI still works
+        cloud_fallback = [
+            "qwen3-coder:480b-cloud",
+            "deepseek-v3.1:671b-cloud",
+            "gpt-oss:120b-cloud",
+            "qwen3-coder:32b-cloud",
+        ]
+        return {"models": cloud_fallback, "cloud": cloud_fallback, "local": [], "online": False}
+
+@mdl.delete("/local")
+async def delete_local_models():
+    """Delete all local (non-cloud) models to free disk space."""
+    deleted, failed = [], []
+    try:
+        with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=3) as r:
+            data        = json.loads(r.read())
+            local_names = [m["name"] for m in data.get("models", []) if "cloud" not in m["name"]]
+
+        for name in local_names:
+            result = subprocess.run(["ollama", "rm", name],
+                                    capture_output=True, text=True, timeout=30)
+            (deleted if result.returncode == 0 else failed).append(name)
+
+        return {"ok": len(failed) == 0, "deleted": deleted, "failed": failed}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "deleted": deleted, "failed": failed}
+
+
+# ── Project Scan ───────────────────────────────
+scan = APIRouter(prefix="/api/scan")
+
+@scan.get("")
+async def scan_project(path: str):
+    try:
+        p     = Path(path)
+        files = []
+        for f in p.rglob("*"):
+            if f.is_file() and not any(s in f.parts for s in SKIP) and not f.name.startswith('.'):
+                rel = str(f.relative_to(p)).replace("\\", "/")
+                files.append({"path": rel, "size": f.stat().st_size, "ext": f.suffix})
+
+        has   = {f["path"] for f in files}
+        ptype = "unknown"
+        if "package.json" in has and any(f.endswith((".jsx", ".tsx")) for f in has):
+            ptype = "react"
+        elif "package.json" in has:
+            ptype = "nodejs"
+        elif "requirements.txt" in has or any(f.endswith(".py") for f in has):
+            ptype = "python"
+
+        return {"files": files, "type": ptype, "count": len(files)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ── Direct Ollama Agent (no Aider) ─────────────
+# Uses precision Git-style merge diff patches rather than rewriting whole files.
+# Supports auto-commit for undo.
+
+TEXT_EXTS = {
+    '.py','.js','.jsx','.ts','.tsx','.mjs','.cjs',
+    '.html','.css','.scss','.sass','.less',
+    '.json','.yaml','.yml','.toml','.ini','.env','.cfg','.conf',
+    '.md','.txt','.rst','.xml','.svg',
+    '.sh','.bat','.ps1','.cmd',
+    '.sql','.prisma','.graphql',
+    '.vue','.svelte','.astro',
+    '.go','.rs','.java','.kt','.swift','.rb','.php','.c','.cpp','.h',
+}
+MAX_FILE_BYTES = 150_000   # skip files > 150 KB
+MAX_TOTAL_CHARS = 180_000  # stay inside ~60k token context
+
+SYSTEM_PROMPT = """You are an expert AI software engineer. You have full access to the user's project files.
+Your goal is to satisfy the user's request by modifying the files using precise search-and-replace blocks.
+
+When making code changes, you MUST use the following format exactly.
+You can use multiple blocks to modify multiple files or multiple parts of the same file.
+
+```diff
+--- relative/path/to/file.ext
++++ relative/path/to/file.ext
+@@ -... +... @@
+</search_block>
+<replace_block>
+[exact lines to replace them with]
+</replace_block>
+```
+
+Rules for patches:
+1. The `<search_block>` MUST MATCH the original file exactly, including whitespace and indentation!
+2. Include enough context lines in the search block to make it uniquely identifiable in the file.
+3. If you are creating a NEW file, use an empty search block.
+4. If you are DELETING a file, use an empty replace block.
+5. Do not output the entire file content, ONLY the sections that need changing!
+6. After your blocks, briefly explain what you changed.
+
+Make the changes immediately and completely."""
+
+def backup_project_git(project_path: str, msg: str = "AiderWeb auto-commit before AI edits"):
+    """Auto-commit current state if it's a git repo, so changes can be undone."""
+    p = Path(project_path)
+    if not (p / ".git").exists():
+        return False
+    # Stage all and commit
+    import subprocess
+    subprocess.run(["git", "add", "."], cwd=project_path, capture_output=True)
+    res = subprocess.run(["git", "commit", "-m", msg], cwd=project_path, capture_output=True)
+    return res.returncode == 0
+
+def read_project_files(project_path: str, explicit_files: list[str] = None) -> tuple[str, list[str]]:
+    """Read explicitly selected files, or all text files if none selected."""
+    p = Path(project_path)
+    files_content = []
+    file_list = []
+    total_chars = 0
+    all_files = []
+
+    if explicit_files:
+        for f_path in explicit_files:
+            f = p / f_path
+            if f.exists() and f.is_file():
+                all_files.append(f)
+    else:
+        # Priority order: config files first, then src files, then others
+        for f in p.rglob("*"):
+            if not f.is_file(): continue
+            if any(s in f.parts for s in SKIP): continue
+            if f.name.startswith('.'): continue
+            if f.suffix.lower() not in TEXT_EXTS: continue
+            try:
+                size = f.stat().st_size
+                if size > MAX_FILE_BYTES: continue
+                if size == 0: continue
+            except: continue
+            all_files.append(f)
+
+    # Sort: config/root files first, then by path depth, then alphabetically
+    def sort_key(f):
+        rel = str(f.relative_to(p))
+        depth = rel.count('/')
+        is_config = f.suffix in ('.json', '.toml', '.yml', '.yaml', '.env', '.md')
+        is_root = depth == 0
+        return (0 if is_root else 1, 0 if is_config else 1, depth, rel)
+
+    all_files.sort(key=sort_key)
+
+    for f in all_files:
+        if total_chars >= MAX_TOTAL_CHARS:
+            break
+        try:
+            content = f.read_text(encoding="utf-8", errors="replace")
+            rel = str(f.relative_to(p)).replace("\\", "/")
+            entry = f"=== FILE: {rel} ===\n{content}\n"
+            if total_chars + len(entry) > MAX_TOTAL_CHARS:
+                # Include partial note
+                files_content.append(f"=== FILE: {rel} === [truncated — file too large]\n")
+                break
+            files_content.append(entry)
+            file_list.append(rel)
+            total_chars += len(entry)
+        except:
+            continue
+
+    return "\n".join(files_content), file_list
+
+def apply_edits(project_path: str, ai_response: str) -> list[str]:
+    """Parse diff patch blocks from AI response and apply them to disk."""
+    import re
+    edited = set()
+    
+    # regex for diff blocks with <search_block> and <replace_block>
+    # matches:
+    # --- relative/path.py
+    # +++ relative/path.py
+    # ...
+    # <search_block>
+    # ...
+    # </search_block>
+    # <replace_block>
+    # ...
+    # </replace_block>
+    
+    file_pattern = re.compile(r'---\s+([^\n]+)\n\+\+\+\s+([^\n]+)\n.*?(?=<search_block>)', re.DOTALL)
+    blocks_pattern = re.compile(r'<search_block>\n?(.*?)\n?</search_block>\s*<replace_block>\n?(.*?)\n?</replace_block>', re.DOTALL)
+    
+    # Split response by `--- ` to process per file
+    parts = ai_response.split('--- ')
+    
+    for part in parts[1:]:
+        part = '--- ' + part
+        file_match = file_pattern.search(part)
+        if not file_match:
+            continue
+            
+        rel_path = file_match.group(2).strip()
+        abs_path = Path(project_path) / rel_path
+        
+        # Read existing content if file exists
+        file_content = ""
+        if abs_path.exists():
+            try:
+                file_content = abs_path.read_text(encoding="utf-8")
+            except:
+                continue
+                
+        # Apply all blocks for this file
+        for block_match in blocks_pattern.finditer(part):
+            search_text = block_match.group(1)
+            replace_text = block_match.group(2)
+            
+            # If search block is empty, we are creating a new file
+            if not search_text.strip():
+                file_content = replace_text
+            # If replace block is empty, we are deleting the file (or emptying it)
+            elif not replace_text.strip() and search_text in file_content:
+                 file_content = file_content.replace(search_text, "")
+            # Normal search and replace
+            elif search_text in file_content:
+                 file_content = file_content.replace(search_text, replace_text)
+            else:
+                 # Search text not found, try stripping leading/trailing whitespace
+                 if search_text.strip() in file_content:
+                     file_content = file_content.replace(search_text.strip(), replace_text.strip())
+        
+        try:
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
+            abs_path.write_text(file_content, encoding="utf-8")
+            edited.add(rel_path)
+        except Exception as e:
+            pass
+            
+    return list(edited)
+
+def strip_edits(response: str) -> str:
+    """Remove diff code blocks from response for clean display."""
+    import re
+    clean = re.sub(r'```diff.*?```\n?', '', response, flags=re.DOTALL)
+    return clean.strip()
+
+
+# ── Agent WebSocket ────────────────────────────
+@app.websocket("/ws/agent")
+async def agent_ws(ws: WebSocket):
+    await ws.accept()
+    stop_flag = asyncio.Event()
+
+    async def send(type_, **kwargs):
+        try:
+            await ws.send_text(json.dumps({"type": type_, **kwargs}))
+        except:
+            pass
+
+    try:
+        while True:
+            raw = await ws.receive_text()
+            msg = json.loads(raw)
+
+            if msg["type"] == "stop":
+                stop_flag.set()
+                await send("stopped")
+                continue
+
+            if msg["type"] == "cmd":
+                cwd = msg.get("cwd", str(Path.home()))
+                await send("agent_event", event="cmd", text=f"⚡ Running: {msg['cmd']}")
+                try:
+                    result = subprocess.run(
+                        msg["cmd"], shell=True, cwd=cwd,
+                        capture_output=True, text=True, timeout=60
+                    )
+                    await send("cmd_result",
+                               output=result.stdout + result.stderr,
+                               success=result.returncode == 0)
+                except subprocess.TimeoutExpired:
+                    await send("cmd_result", output="Timed out after 60s", success=False)
+                except Exception as e:
+                    await send("cmd_result", output=str(e), success=False)
+                continue
+
+            if msg["type"] != "run":
+                continue
+
+            # ── Main agent run ─────────────────
+            stop_flag.clear()
+            project_path = msg["path"]
+            model        = msg.get("model", DEFAULT_MODEL).replace("ollama/", "")
+            message      = msg["message"]
+
+            await send("agent_event", event="start", text=f"🤖 Starting with {model}...")
+            await send("agent_event", event="scan",  text=f"📂 Reading project: {Path(project_path).name}")
+
+            # Step 1: Backup project to git before edits
+            backed_up = await asyncio.to_thread(backup_project_git, project_path)
+            if backed_up:
+                await send("agent_event", event="cmd", text=f"💾 Saved a git backup of the project before edits")
+
+            # Step 2: Read selected files or all files
+            selected_files = msg.get("selected_files", [])
+            files_context, file_list = await asyncio.to_thread(read_project_files, project_path, selected_files)
+
+            await send("agent_event", event="scan",
+                text=f"📋 Loaded {len(file_list)} files into context")
+            await send("agent_event", event="think",
+                text=f"🧠 Sending {len(files_context):,} chars to {model}...")
+
+            # Step 3: Build messages for Ollama
+            user_content = f"{files_context}\n\n---\nUSER REQUEST: {message}"
+            ollama_messages = [
+                {"role": "system",    "content": SYSTEM_PROMPT},
+                {"role": "user",      "content": user_content},
+            ]
+
+            # Step 3: Stream response from Ollama
+            ollama_model = model  # already stripped "ollama/" prefix
+            payload = json.dumps({
+                "model":    ollama_model,
+                "messages": ollama_messages,
+                "stream":   True,
+                "options":  {"temperature": 0.1, "num_predict": 8192},
+            }).encode()
+
+            full_response = ""
+            current_chunk = ""
+
+            try:
+                import urllib.request as req
+                request = req.Request(
+                    "http://localhost:11434/api/chat",
+                    data=payload,
+                    headers={"Content-Type": "application/json"},
+                    method="POST"
+                )
+
+                with req.urlopen(request, timeout=300) as response:
+                    for line in response:
+                        if stop_flag.is_set():
+                            break
+                        line = line.decode("utf-8", errors="replace").strip()
+                        if not line:
+                            continue
+                        try:
+                            chunk_data = json.loads(line)
+                            token = chunk_data.get("message", {}).get("content", "")
+                            if token:
+                                full_response += token
+                                current_chunk += token
+
+                                # Stream clean text (without edit blocks) in chunks
+                                if len(current_chunk) > 50 or '\n' in current_chunk:
+                                    display = strip_edits(current_chunk)
+                                    if display:
+                                        await send("chunk", text=display)
+                                    current_chunk = ""
+
+                                # Detect and apply edits in real-time as they complete
+                                if ">>>END" in full_response:
+                                    newly_edited = await asyncio.to_thread(
+                                        apply_edits, project_path, full_response
+                                    )
+                                    for f in newly_edited:
+                                        await send("agent_event", event="edit",
+                                            text=f"✏️ Written: {f}")
+
+                            if chunk_data.get("done"):
+                                break
+                        except json.JSONDecodeError:
+                            continue
+
+            except Exception as e:
+                await send("agent_event", event="error", text=f"⚠️ Ollama error: {str(e)}")
+                await send("done", edited_files=[])
+                continue
+
+            # Flush any remaining chunk
+            if current_chunk:
+                display = strip_edits(current_chunk)
+                if display:
+                    await send("chunk", text=display)
+
+            # Final apply pass (catches any edits not yet written)
+            edited_files = await asyncio.to_thread(apply_edits, project_path, full_response)
+
+            # --- Agentic Loop execution (e.g. run a test command if requested) ---
+            agent_loop_result = ""
+            test_cmd = msg.get("test_cmd", "").strip()
+            
+            if test_cmd and edited_files:
+                await send("agent_event", event="cmd", text=f"⚡ Auto-running test command: {test_cmd}")
+                try:
+                    res = subprocess.run(
+                        test_cmd, shell=True, cwd=project_path,
+                        capture_output=True, text=True, timeout=120
+                    )
+                    if res.returncode == 0:
+                        agent_loop_result = "\n✅ Tests passed!"
+                        await send("agent_event", event="done", text="✅ Tests passed!")
+                    else:
+                        output = res.stdout + res.stderr
+                        agent_loop_result = f"\n❌ Command failed. Output:\n```\n{output[:1000]}...\n```"
+                        await send("agent_event", event="error", text="❌ Command failed")
+                except Exception as e:
+                    agent_loop_result = f"\n❌ Failed to run command: {e}"
+                    await send("agent_event", event="error", text=f"❌ Failed to run command: {e}")
+
+            summary = (
+                f"✅ Edited {len(edited_files)} file(s): {', '.join(edited_files[:5])}{agent_loop_result}"
+                if edited_files else "✅ Done"
+            )
+            
+            if not test_cmd or (test_cmd and not agent_loop_result.startswith("\n❌")):
+                await send("agent_event", event="done", text=summary)
+            
+            await send("done", edited_files=edited_files, loop_result=agent_loop_result)
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        try: await send("error", text=str(e))
+        except: pass
+
+
+# ── Terminal WebSocket ─────────────────────────
+@app.websocket("/ws/terminal")
+async def terminal_ws(ws: WebSocket):
+    await ws.accept()
+    proc = None
+    try:
+        init  = json.loads(await ws.receive_text())
+        cwd   = init.get("cwd", str(Path.home()))
+        shell = "powershell.exe" if sys.platform == "win32" else "bash"
+
+        proc = await asyncio.create_subprocess_exec(
+            shell,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=cwd,
+        )
+
+        await ws.send_text(json.dumps({"type": "ready"}))
+
+        async def stream():
+            while True:
+                data = await proc.stdout.read(2048)
+                if not data:
+                    break
+                await ws.send_text(json.dumps({
+                    "type": "output",
+                    "text": data.decode("utf-8", errors="replace")
+                }))
+        asyncio.create_task(stream())
+
+        while True:
+            msg = json.loads(await ws.receive_text())
+            if msg["type"] == "input" and proc.stdin:
+                proc.stdin.write(msg["text"].encode())
+                await proc.stdin.drain()
+
+    except WebSocketDisconnect:
+        if proc:
+            try: proc.kill()
+            except: pass
+    except Exception as e:
+        try: await ws.send_text(json.dumps({"type": "error", "text": str(e)}))
+        except: pass
+
+
+# ── Register routers ───────────────────────────
+app.include_router(fs)
+app.include_router(proj)
+app.include_router(git)
+app.include_router(mdl)
+app.include_router(scan)
+
+# ── Serve built frontend ───────────────────────
+frontend = Path(__file__).parent.parent / "frontend" / "dist"
+if frontend.exists():
+    app.mount("/", StaticFiles(directory=str(frontend), html=True), name="static")
+
+if __name__ == "__main__":
+    ip = get_ip()
+    print("\n" + "="*52)
+    print("  AiderWeb — Cloud AI Coding")
+    print(f"  Local:    http://localhost:8000")
+    print(f"  Network:  http://{ip}:8000  ← phone/other PC")
+    print("="*52 + "\n")
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False, log_level="warning")
