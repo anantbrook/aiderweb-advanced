@@ -43,7 +43,10 @@ function fmt(text) {
   })
   
   text = text.replace(/```(\w+)?\n?([\s\S]*?)```/g,
-    (_, l, c) => `<div class="my-3 rounded-xl border border-border/80 bg-bg1 overflow-hidden text-[13px] shadow-sm group"><div class="bg-bg2/50 px-4 py-2 text-gray-400 border-b border-border/80 flex justify-between items-center"><span class="font-mono text-xs uppercase tracking-wider">${l || 'code'}</span></div><pre class="p-4 overflow-x-auto text-gray-300 font-mono custom-scroll"><code>${esc(c.trim())}</code></pre></div>`)
+    (_, l, c) => {
+       const b64 = btoa(unescape(encodeURIComponent(c.trim())))
+       return `<div class="my-3 rounded-xl border border-border/80 bg-bg1 overflow-hidden text-[13px] shadow-sm group"><div class="bg-bg2/50 px-4 py-2 text-gray-400 border-b border-border/80 flex justify-between items-center"><span class="font-mono text-xs uppercase tracking-wider">${l || 'code'}</span><button onclick="navigator.clipboard.writeText(decodeURIComponent(escape(atob('${b64}')))); window.dispatchEvent(new CustomEvent('agent_metrics', { detail: { type: 'toast', msg: 'Code copied to clipboard', toastType: 'info' } }))" class="text-[10px] border border-border/40 bg-bg3/50 hover:bg-bg3 hover:text-white px-2 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity">Copy</button></div><pre class="p-4 overflow-x-auto text-gray-300 font-mono custom-scroll"><code>${esc(c.trim())}</code></pre></div>`
+    })
   
   // Basic inline formatting
   text = text.replace(/`([^`\n]+)`/g, '<code class="bg-bg0 text-accent px-1.5 py-0.5 rounded font-mono text-[0.9em] border border-border/50">$1</code>')
@@ -79,9 +82,20 @@ function AgentEvent({ event }) {
 // Chat message bubble
 function Message({ msg }) {
   const isUser = msg.role === 'user'
+  
+  const handleCopy = () => {
+     if (!msg.content) return
+     navigator.clipboard.writeText(msg.content.replace(/<[^>]*>?/gm, ''))
+     window.dispatchEvent(new CustomEvent('agent_metrics', { detail: { type: 'toast', msg: 'Copied message to clipboard', toastType: 'info' } }))
+  }
 
   return (
-    <div className={`flex gap-4 animate-in ${isUser ? 'justify-end' : 'justify-start'}`}>
+    <div className={`flex gap-4 animate-in group relative ${isUser ? 'justify-end' : 'justify-start'}`}>
+      {!msg.streaming && !msg.pendingApproval && (
+          <button onClick={handleCopy} className={`absolute top-0 opacity-0 group-hover:opacity-100 transition-opacity bg-bg1 border border-border/50 text-gray-500 hover:text-white px-2 py-1 rounded text-[10px] z-10 ${isUser ? 'left-0 -translate-x-full -ml-2' : 'right-0 translate-x-full ml-2'}`} title="Copy entire message">
+              Copy
+          </button>
+      )}
       {!isUser && (
           <div className={`w-8 h-8 mt-1 rounded-xl flex items-center justify-center text-sm flex-shrink-0 bg-gradient-to-br from-brand/20 to-brand/5 border border-brand/20 text-brand shadow-sm`}>
             ⬡
@@ -173,6 +187,7 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
   const [statusText, setStatusText] = useState('')
   const [testCmd, setTestCmd] = useState('') // added for agent loop
   const [recording, setRecording] = useState(false)
+  const historyIdx = useRef(-1)
   const [agentMode, setAgentMode] = useState('coder') // 'coder', 'planner', 'reviewer'
   const [showTestCmd, setShowTestCmd] = useState(false)
   const [droppedFiles, setDroppedFiles] = useState([]) // For drag and drop uploads
@@ -428,7 +443,28 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
   }
 
   const onKey = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() }
+    if (e.key === 'Enter' && !e.shiftKey) { 
+        e.preventDefault()
+        send()
+        historyIdx.current = -1
+    } else if (e.key === 'ArrowUp' && !input.trim()) {
+        e.preventDefault()
+        const userMsgs = messages.filter(m => m.role === 'user').reverse()
+        if (userMsgs.length > 0) {
+            historyIdx.current = Math.min(historyIdx.current + 1, userMsgs.length - 1)
+            setInput(userMsgs[historyIdx.current].content)
+        }
+    } else if (e.key === 'ArrowDown' && historyIdx.current >= 0) {
+        e.preventDefault()
+        const userMsgs = messages.filter(m => m.role === 'user').reverse()
+        if (historyIdx.current === 0) {
+            historyIdx.current = -1
+            setInput('')
+        } else {
+            historyIdx.current -= 1
+            setInput(userMsgs[historyIdx.current].content)
+        }
+    }
   }
 
   const onInputChange = (e) => {

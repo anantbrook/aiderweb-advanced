@@ -24,22 +24,36 @@ export default function App() {
   const [projects, setProjects]         = useState([])
   const [activeTab, setActiveTab]       = useState(0)
   const [cloudModels, setCloudModels]   = useState([])
-  const [selectedFiles, setSelectedFiles] = useState([]) // For explicitly included context
+  const [selectedFiles, setSelectedFiles] = useState([])
   const [localModels, setLocalModels]   = useState([])
   const [model, setModel]               = useState('ollama/deepseek-v3.1:671b-cloud')
   const [ollamaOnline, setOllamaOnline] = useState(false)
-  const [showTerminal, setShowTerminal] = useState(true)
-  const [showFiles, setShowFiles]       = useState(true)
-  const [showGit, setShowGit]           = useState(false)
-  const [showDiff, setShowDiff]         = useState(false)
+  
+  // VS Code Layout State
+  const [activityBarMode, setActivityBarMode] = useState('chat') // 'chat', 'explorer', 'git', 'search'
+  const [showSidebar, setShowSidebar] = useState(true)
+  const [showBottomPanel, setShowBottomPanel] = useState(true)
+  const [bottomPanelMode, setBottomPanelMode] = useState('terminal') // 'terminal', 'diff'
+  const [openEditors, setOpenEditors] = useState([{ id: 'chat', type: 'chat', name: 'Agent Chat' }])
+  const [activeEditor, setActiveEditor] = useState('chat')
+  
   const [showPicker, setShowPicker]     = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [gitData, setGitData]           = useState(null)
   const [projectStats, setProjectStats] = useState(null)
-  const [sidebarW, setSidebarW]         = useState(220)
-  const [fileViewer, setFileViewer]     = useState(null)
+  const [sidebarW, setSidebarW]         = useState(260)
   const [mobileMenu, setMobileMenu]     = useState(false)
+  
+  // Toast notifications & Context metrics
+  const [toasts, setToasts] = useState([])
+  const [lastMetrics, setLastMetrics] = useState({ in: 0, out: 0, status: 'Idle' })
   const resizing = useRef(false)
+  
+  const addToast = (msg, type='info') => {
+      const id = Date.now()
+      setToasts(t => [...t, { id, msg, type }])
+      setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 3000)
+  }
 
   const project = projects[activeTab] || null
 
@@ -106,14 +120,30 @@ export default function App() {
     const onUp   = () => { resizing.current = false; document.body.style.cursor = '' }
     
     const onOpenFile = (e) => {
-        setFileViewer({ path: e.detail.path, name: e.detail.name, content: 'Loading...' })
+        const id = e.detail.path
+        // Check if already open
+        setOpenEditors(eds => {
+            if (!eds.find(x => x.id === id)) {
+                return [...eds, { id, type: 'file', path: e.detail.path, name: e.detail.name, content: 'Loading...' }]
+            }
+            return eds
+        })
+        setActiveEditor(id)
+        
         fetch(`/api/fs/read?path=${encodeURIComponent(e.detail.path)}`)
             .then(r => r.json())
             .then(d => {
-                if (d.content !== undefined) setFileViewer(fv => fv ? { ...fv, content: d.content } : null)
-                else setFileViewer(fv => fv ? { ...fv, content: 'Error loading file' } : null)
+                if (d.content !== undefined) {
+                    setOpenEditors(eds => eds.map(ed => ed.id === id ? { ...ed, content: d.content } : ed))
+                } else {
+                    setOpenEditors(eds => eds.map(ed => ed.id === id ? { ...ed, content: 'Error loading file' } : ed))
+                }
             })
     }
+    
+    // Global metric listener
+    const onMetrics = (e) => setLastMetrics(m => ({ ...m, ...e.detail }))
+    window.addEventListener('agent_metrics', onMetrics)
     
     window.addEventListener('mousemove', onMove)
     const onKey = e => {
@@ -133,6 +163,7 @@ export default function App() {
         window.removeEventListener('mouseup', onUp) 
         window.removeEventListener('open_file', onOpenFile)
         window.removeEventListener('keydown', onKey)
+        window.removeEventListener('agent_metrics', onMetrics)
     }
   }, [])
 
@@ -162,225 +193,260 @@ export default function App() {
   const isLocal = !model.includes('cloud') && model !== ''
 
   return (
-    <div className="flex flex-col h-screen bg-bg0 overflow-hidden select-none">
-
-      {/* ── TITLE BAR ──────────────────────────── */}
-      <div className="h-10 flex items-center gap-2 px-3 bg-bg1 border-b border-border flex-shrink-0 z-20">
-        <span className="text-accent text-xl">⬡</span>
-        <span className="font-bold text-sm text-white mr-1">AiderWeb</span>
-
-        {/* Project tabs */}
-        <div className="flex items-end gap-0.5 flex-1 h-full overflow-x-auto">
-          {projects.map((p, i) => (
-            <div key={i}
-              onClick={() => { setActiveTab(i); setProjectStats(null); setGitData(null) }}
-              className={`relative flex items-center gap-1.5 px-3 h-8 mt-2 rounded-t border border-b-0
-                cursor-pointer text-xs whitespace-nowrap group flex-shrink-0 transition-all
-                ${i === activeTab
-                  ? 'bg-bg0 border-border text-white'
-                  : 'bg-bg2 border-border/40 text-gray-400 hover:text-white hover:bg-bg3'}`}>
-              <span>📁</span>
-              <span>{p.name}</span>
-              <button onClick={e => removeProject(i, e)}
-                className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red ml-0.5">✕</button>
-              {i === activeTab && <div className="absolute bottom-0 left-2 right-2 h-0.5 bg-accent rounded-full" />}
+    <div className="flex flex-col h-screen bg-bg0 overflow-hidden text-gray-300 font-sans select-none">
+      
+      {/* ── TITLE BAR (Top) ──────────────────────────── */}
+      <div className="h-[35px] flex items-center justify-between px-2 bg-[#181818] border-b border-border/40 flex-shrink-0 z-20 title-drag">
+        {/* Left: Window Controls / Title */}
+        <div className="flex items-center gap-3">
+            <span className="text-brand text-lg ml-1">⬡</span>
+            <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar max-w-[200px] md:max-w-[400px]">
+              {projects.map((p, i) => (
+                <div key={i}
+                  onClick={() => { setActiveTab(i); setProjectStats(null); setGitData(null) }}
+                  className={`flex items-center gap-1.5 px-2 py-0.5 rounded cursor-pointer text-[11px] whitespace-nowrap group transition-all
+                    ${i === activeTab ? 'bg-bg3 text-white' : 'hover:bg-bg2 text-gray-400'}`}>
+                  <span>{p.name}</span>
+                  <button onClick={e => removeProject(i, e)} className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red">✕</button>
+                </div>
+              ))}
+              <button onClick={() => setShowPicker(true)} className="flex items-center justify-center w-5 h-5 rounded hover:bg-bg2 text-gray-400 hover:text-white" title="Open project">+</button>
             </div>
-          ))}
-          <button onClick={() => setShowPicker(true)}
-            className="flex items-center justify-center w-7 h-7 mt-2 rounded border border-border
-              text-gray-400 hover:text-white hover:bg-bg3 hover:border-accent/50 text-lg transition-all flex-shrink-0"
-            title="Open project">+</button>
         </div>
 
-        {/* Mobile Hamburger */}
-        <button className="md:hidden ml-auto text-gray-400" onClick={() => setMobileMenu(m => !m)}>☰</button>
-
-        {/* Right-side controls */}
-        <div className={`flex items-center gap-2 flex-shrink-0 ${mobileMenu ? 'absolute top-10 left-0 right-0 bg-bg1 border-b border-border p-3 flex-wrap shadow-lg z-50' : 'hidden md:flex'}`}>
-
-          {/* File count + type badge */}
-          {projectStats && (
-            <div className="hidden md:flex items-center gap-1 text-[11px] font-medium text-gray-500 bg-bg2 border border-border/50 px-2 py-0.5 rounded-full">
-              <span>📋 {projectStats.count}</span>
-              <span className="text-gray-700">·</span>
-              <span className="text-gray-400">{projectStats.type}</span>
-            </div>
-          )}
-
-          {/* Git branch */}
-          {gitData?.branch && (
-            <button onClick={() => setShowGit(g => !g)}
-              className={`flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded-full border transition-all
-                ${showGit ? 'bg-brand/10 border-brand/30 text-brand' : 'border-border/50 bg-bg2 text-gray-400 hover:text-white'}`}>
-              ⎇ {gitData.branch}
-              {(gitData.status || '').trim() && <span className="w-1.5 h-1.5 rounded-full bg-yellow" />}
+        {/* Center: Command Palette Trigger */}
+        <div className="absolute left-1/2 -translate-x-1/2 hidden md:flex items-center justify-center">
+            <button onClick={() => setShowShortcuts(true)} className="flex items-center gap-2 bg-[#2d2d2d] hover:bg-[#333] border border-border/40 rounded-md px-16 py-1 text-[11px] text-gray-400 transition-colors shadow-sm w-96 max-w-full justify-center">
+                <span>🔍</span>
+                <span>{project ? project.name : 'Search'}</span>
+                <span className="ml-auto text-gray-500 font-mono text-[9px] border border-gray-600 rounded px-1">Cmd K</span>
             </button>
-          )}
+        </div>
 
-          {/* Ollama status dot */}
-          <div className="flex items-center gap-1.5 px-2 py-1 bg-bg2 border border-border rounded text-xs">
-            <div className={`w-2 h-2 rounded-full transition-all
-              ${ollamaOnline ? 'bg-green shadow-[0_0_4px_#3fb950]' : 'bg-red'}`} />
-            <span className="text-gray-400 hidden sm:inline">{ollamaOnline ? 'Ollama' : 'Offline'}</span>
+        {/* Right: Layout Toggles & Mobile */}
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <button className="md:hidden text-gray-400 p-1" onClick={() => setMobileMenu(m => !m)}>☰</button>
+          
+          <div className="hidden md:flex items-center bg-[#252526] rounded border border-border/30 overflow-hidden">
+              <button onClick={() => setShowSidebar(f => !f)} className={`px-2 py-0.5 text-[11px] ${showSidebar ? 'bg-[#37373d] text-white' : 'text-gray-400 hover:text-gray-200'}`} title="Toggle Sidebar">◧</button>
+              <button onClick={() => setShowBottomPanel(t => !t)} className={`px-2 py-0.5 text-[11px] border-l border-border/30 ${showBottomPanel ? 'bg-[#37373d] text-white' : 'text-gray-400 hover:text-gray-200'}`} title="Toggle Panel">◤</button>
           </div>
-
-          {/* Model selector — cloud models first, local models last with warning */}
-          <select value={model} onChange={e => setModel(e.target.value)}
-            className="hidden sm:block bg-bg1 hover:bg-bg2 border border-border text-gray-300 hover:text-white text-xs px-2 py-1 rounded-lg outline-none cursor-pointer max-w-[210px] truncate transition-colors appearance-none pr-6 font-medium relative"
-            style={{ backgroundImage: `url('data:image/svg+xml;utf8,<svg fill="%23888" height="16" viewBox="0 0 24 24" width="16" xmlns="http://www.w3.org/2000/svg"><path d="M7 10l5 5 5-5z"/></svg>')`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 4px center' }}>
-            {cloudModels.length > 0 ? (
-              <optgroup label="☁️ Massive Cloud Models">
-                {cloudModels.map(m => <option key={m} value={`ollama/${m}`}>☁ {m}</option>)}
-              </optgroup>
-            ) : (
-              <optgroup label="☁️ Massive Cloud Models">
-                <option value="ollama/gpt-oss:120b-cloud">☁ gpt-oss:120b-cloud</option>
-                <option value="ollama/gpt-oss:20b-cloud">☁ gpt-oss:20b-cloud</option>
-                <option value="ollama/deepseek-v3.1:671b-cloud">☁ deepseek-v3.1:671b-cloud</option>
-                <option value="ollama/qwen3-coder:480b-cloud">☁ qwen3-coder:480b-cloud</option>
-                <option value="ollama/qwen3-vl:235b-cloud">☁ qwen3-vl:235b-cloud</option>
-                <option value="ollama/minimax-m2:cloud">☁ minimax-m2:cloud</option>
-                <option value="ollama/alm-4.6:cloud">☁ alm-4.6:cloud</option>
-                <option value="ollama/gpt-4o-proxy">✨ gpt-4o-proxy</option>
-                <option value="ollama/claude-3.5-sonnet-proxy">✨ claude-3.5-sonnet-proxy</option>
-                <option value="ollama/jules-proxy">✨ jules-proxy</option>
-              </optgroup>
-            )}
-            {/* If local models exist but user doesn't want them, they still load below the cloud ones so they are out of the way */}
-            {localModels.length > 0 && (
-              <optgroup label="💻 Local Downloaded Models">
-                {localModels.map(m => <option key={m} value={`ollama/${m}`}>💻 {m}</option>)}
-              </optgroup>
-            )}
-          </select>
-
-          {/* Warn badge when a local model is selected */}
-          {isLocal && (
-            <span className="hidden md:inline text-xs text-yellow bg-yellow/10 border border-yellow/30 px-2 py-1 rounded">
-              Local Hardware
-            </span>
-          )}
-
-          <div className="hidden md:flex bg-bg2 rounded-lg p-0.5 border border-border/50 shadow-sm ml-1 gap-0.5">
-              <button onClick={() => setShowFiles(f => !f)}
-                className={`text-[11px] px-2 py-1 font-medium rounded transition-all ${showFiles ? 'bg-bg3 text-white shadow-sm' : 'text-gray-400 hover:text-gray-200'}`}>
-                Files
-              </button>
-    
-              <button onClick={() => setShowTerminal(t => !t)}
-                className={`text-[11px] px-2 py-1 font-medium rounded transition-all ${showTerminal ? 'bg-bg3 text-white shadow-sm' : 'text-gray-400 hover:text-gray-200'}`}>
-                Term
-              </button>
-              
-              <button onClick={() => setShowDiff(d => !d)}
-                className={`text-[11px] px-2 py-1 font-medium rounded transition-all ${showDiff ? 'bg-bg3 text-brand shadow-sm' : 'text-gray-400 hover:text-gray-200'}`}>
-                Diff
-              </button>
-          </div>
-
-          <button onClick={() => setShowSettings(true)}
-            className="w-7 h-7 flex items-center justify-center text-gray-400 hover:text-white transition-all ml-1">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 15a3 3 0 100-6 3 3 0 000 6z"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
-          </button>
         </div>
       </div>
 
-      {/* ── MAIN LAYOUT ────────────────────────── */}
-      <div className="flex flex-1 overflow-hidden min-h-0 bg-bg0">
+      {/* ── MIDDLE WORKSPACE ────────────────────────── */}
+      <div className="flex flex-1 overflow-hidden min-h-0 relative">
+        
+        {/* ACTIVITY BAR (Leftmost) */}
+        <div className="w-[48px] bg-[#181818] border-r border-border/40 flex flex-col items-center py-2 gap-4 flex-shrink-0 z-30">
+            <button onClick={() => { setShowSidebar(true); setActivityBarMode('explorer') }} className={`relative p-2 text-xl transition-colors ${activityBarMode === 'explorer' && showSidebar ? 'text-white' : 'text-gray-500 hover:text-gray-300'}`} title="Explorer (Cmd+Shift+E)">
+                📁
+                {activityBarMode === 'explorer' && showSidebar && <div className="absolute left-0 top-1 bottom-1 w-0.5 bg-brand" />}
+            </button>
+            <button onClick={() => { setShowSidebar(true); setActivityBarMode('chat') }} className={`relative p-2 text-xl transition-colors ${activityBarMode === 'chat' && showSidebar ? 'text-white' : 'text-gray-500 hover:text-gray-300'}`} title="Agent Chat (Cmd+Shift+A)">
+                💬
+                {activityBarMode === 'chat' && showSidebar && <div className="absolute left-0 top-1 bottom-1 w-0.5 bg-brand" />}
+            </button>
+            <button onClick={() => { setShowSidebar(true); setActivityBarMode('search') }} className={`relative p-2 text-xl transition-colors ${activityBarMode === 'search' && showSidebar ? 'text-white' : 'text-gray-500 hover:text-gray-300'}`} title="Search (Cmd+Shift+F)">
+                🔍
+                {activityBarMode === 'search' && showSidebar && <div className="absolute left-0 top-1 bottom-1 w-0.5 bg-brand" />}
+            </button>
+            <button onClick={() => { setShowSidebar(true); setActivityBarMode('git') }} className={`relative p-2 text-xl transition-colors ${activityBarMode === 'git' && showSidebar ? 'text-white' : 'text-gray-500 hover:text-gray-300'}`} title="Source Control (Cmd+Shift+G)">
+                ⎇
+                {activityBarMode === 'git' && showSidebar && <div className="absolute left-0 top-1 bottom-1 w-0.5 bg-brand" />}
+            </button>
+            
+            <div className="mt-auto flex flex-col gap-4 mb-2">
+                <button onClick={() => setShowSettings(true)} className="p-2 text-xl text-gray-500 hover:text-white transition-colors" title="Settings">⚙️</button>
+            </div>
+        </div>
 
-        {showFiles && (
+        {/* SIDEBAR (Resizable) */}
+        {showSidebar && (
           <>
-            <div className={`flex flex-col bg-bg0 border-r border-border/40 flex-shrink-0 ${mobileMenu ? 'absolute inset-y-0 left-0 z-40 shadow-2xl' : ''}`}
-              style={{ width: mobileMenu ? '80%' : sidebarW }}>
-              <div className="flex items-center justify-between px-3 py-2.5 flex-shrink-0 bg-bg0">
-                <span className="text-[11px] font-bold text-gray-500 uppercase tracking-widest truncate">
-                  {project?.name || 'Explorer'}
+            <div className={`flex flex-col bg-[#1e1e1e] border-r border-border/40 flex-shrink-0 z-20 ${mobileMenu ? 'absolute inset-y-0 left-[48px] right-10 shadow-2xl' : ''}`}
+              style={{ width: mobileMenu ? 'auto' : sidebarW }}>
+              <div className="flex items-center justify-between px-4 py-2.5 flex-shrink-0">
+                <span className="text-[11px] font-bold text-gray-300 uppercase tracking-widest">
+                  {activityBarMode === 'explorer' ? (project?.name || 'EXPLORER') : activityBarMode.toUpperCase()}
                 </span>
               </div>
+              
               <div className="flex-1 overflow-y-auto min-h-0 relative">
-                {project ? (
-                  <FileTree root={project.path} selectedFiles={selectedFiles} setSelectedFiles={setSelectedFiles} />
+                {!project ? (
+                    <div className="p-4 text-center mt-10">
+                        <p className="text-gray-500 text-xs mb-4">No folder opened</p>
+                        <button onClick={() => setShowPicker(true)} className="bg-brand text-bg0 px-3 py-1.5 rounded font-medium text-xs w-full hover:opacity-90">Open Folder</button>
+                    </div>
                 ) : (
-                  <div className="flex flex-col items-center justify-center h-full gap-3 p-5 text-center">
-                    <div className="text-4xl">📁</div>
-                    <p className="text-gray-500 text-xs">No project open</p>
-                    <button onClick={() => setShowPicker(true)}
-                      className="px-3 py-1.5 bg-accent/20 border border-accent/50 text-accent rounded-lg text-xs hover:bg-accent hover:text-bg0 transition-all">
-                      Open Project
-                    </button>
-                  </div>
+                    <>
+                        {activityBarMode === 'explorer' && <FileTree root={project.path} selectedFiles={selectedFiles} setSelectedFiles={setSelectedFiles} />}
+                        {activityBarMode === 'git' && <GitPanel data={gitData} />}
+                        {activityBarMode === 'chat' && <AgentChat project={project} model={model} ollamaOnline={ollamaOnline} selectedFiles={selectedFiles} setSelectedFiles={setSelectedFiles} />}
+                        {activityBarMode === 'search' && (
+                            <div className="p-4 text-xs text-gray-400">
+                                <p>Search is accessible via the Explorer panel top bar for now.</p>
+                                <button onClick={() => setActivityBarMode('explorer')} className="mt-4 text-brand underline">Go to Explorer</button>
+                            </div>
+                        )}
+                    </>
                 )}
               </div>
-              {showGit && gitData && <GitPanel data={gitData} />}
             </div>
-
             {/* Resize handle */}
-            <div className="w-0.5 hover:w-1 bg-transparent hover:bg-accent/30 cursor-col-resize flex-shrink-0 transition-all"
+            <div className="w-1 hover:bg-brand/50 cursor-col-resize flex-shrink-0 z-20 relative -ml-0.5 transition-colors"
               onMouseDown={() => { resizing.current = true; document.body.style.cursor = 'col-resize' }} />
           </>
         )}
 
-        <div className="flex-1 flex flex-col overflow-hidden min-w-0 min-h-0">
-          {fileViewer ? (
-             <div className="flex-1 flex flex-col bg-[#1d1f21] overflow-hidden relative">
-                <div className="flex items-center justify-between px-4 py-2 bg-[#2d2d2d] border-b border-border shadow-sm z-10">
-                   <div className="flex items-center gap-2">
-                       <span className="text-gray-400">📄</span>
-                       <span className="text-white text-sm font-medium">{fileViewer.name}</span>
-                       <span className="text-gray-500 text-xs ml-2 hidden sm:inline">{fileViewer.path}</span>
-                   </div>
-                   <button onClick={() => setFileViewer(null)} className="text-gray-500 hover:text-white w-6 h-6 flex items-center justify-center rounded hover:bg-gray-700">✕</button>
-                </div>
-                <div className="flex-1 overflow-auto p-4 text-sm font-mono text-white selection:bg-accent/30 custom-scroll">
-                    <Editor
-                      value={fileViewer.content}
-                      onValueChange={() => {}}
-                      highlight={code => {
-                          const ext = fileViewer.name.split('.').pop().toLowerCase()
-                          let lang = Prism.languages.javascript
-                          if (['ts', 'tsx'].includes(ext)) lang = Prism.languages.typescript
-                          if (ext === 'py') lang = Prism.languages.python
-                          if (ext === 'css') lang = Prism.languages.css
-                          if (ext === 'json') lang = Prism.languages.json
-                          return Prism.highlight(code, lang, ext)
-                      }}
-                      padding={10}
-                      style={{
-                        fontFamily: '"Fira Code", "Consolas", monospace',
-                        fontSize: 14,
-                        minHeight: '100%'
-                      }}
-                      readOnly
-                    />
-                </div>
-             </div>
-          ) : (
-             <AgentChat project={project} model={model} ollamaOnline={ollamaOnline} selectedFiles={selectedFiles} setSelectedFiles={setSelectedFiles} />
+        {/* MAIN EDITOR AREA */}
+        <div className="flex-1 flex flex-col overflow-hidden min-w-0 bg-[#1e1e1e] relative">
+          
+          {/* Editor Tabs */}
+          <div className="flex bg-[#181818] border-b border-border/40 overflow-x-auto no-scrollbar flex-shrink-0 h-[35px]">
+              {openEditors.map(ed => (
+                  <div key={ed.id} onClick={() => setActiveEditor(ed.id)}
+                       className={`flex items-center gap-2 px-3 border-r border-border/40 min-w-0 cursor-pointer group ${activeEditor === ed.id ? 'bg-[#1e1e1e] text-brand border-t border-t-brand' : 'bg-[#2d2d2d] text-gray-500 hover:bg-[#1e1e1e]'}`}>
+                      <span className="text-[11px] truncate select-none">{ed.name}</span>
+                      <button onClick={(e) => {
+                          e.stopPropagation();
+                          const next = openEditors.filter(x => x.id !== ed.id)
+                          setOpenEditors(next)
+                          if (activeEditor === ed.id) setActiveEditor(next.length ? next[next.length-1].id : null)
+                      }} className={`opacity-0 group-hover:opacity-100 hover:text-white text-gray-500 rounded-sm`}>✕</button>
+                  </div>
+              ))}
+          </div>
+          
+          {/* Editor Content */}
+          <div className="flex-1 overflow-hidden relative bg-[#1e1e1e]">
+              {!activeEditor ? (
+                  <div className="flex items-center justify-center h-full">
+                      <div className="text-center text-gray-600 select-none">
+                          <div className="text-6xl mb-4 opacity-20">⬡</div>
+                          <p className="text-sm font-medium">AiderWeb Advanced</p>
+                          <div className="mt-6 grid grid-cols-2 gap-x-8 gap-y-2 text-left text-xs">
+                              <span>Show All Commands</span><kbd className="font-mono">Cmd+K</kbd>
+                              <span>Open Folder</span><kbd className="font-mono">Cmd+O</kbd>
+                              <span>Toggle Terminal</span><kbd className="font-mono">Cmd+~</kbd>
+                              <span>Focus Chat</span><kbd className="font-mono">Cmd+Shift+A</kbd>
+                          </div>
+                      </div>
+                  </div>
+              ) : (
+                  openEditors.map(ed => (
+                      <div key={ed.id} className={`absolute inset-0 flex flex-col ${activeEditor === ed.id ? 'z-10' : 'hidden z-0'}`}>
+                          {ed.type === 'chat' && (
+                              <AgentChat project={project} model={model} ollamaOnline={ollamaOnline} selectedFiles={selectedFiles} setSelectedFiles={setSelectedFiles} isMainEditor={true} />
+                          )}
+                          {ed.type === 'file' && (
+                              <div className="flex-1 overflow-auto p-4 text-[13px] font-mono text-[#d4d4d4] custom-scroll">
+                                <Editor
+                                  value={ed.content}
+                                  onValueChange={() => {}}
+                                  highlight={code => {
+                                      const ext = ed.name.split('.').pop().toLowerCase()
+                                      let lang = Prism.languages.javascript
+                                      if (['ts', 'tsx'].includes(ext)) lang = Prism.languages.typescript
+                                      if (ext === 'py') lang = Prism.languages.python
+                                      if (ext === 'css') lang = Prism.languages.css
+                                      if (ext === 'json') lang = Prism.languages.json
+                                      if (ext === 'html') lang = Prism.languages.html
+                                      if (ext === 'sh' || ext === 'bat') lang = Prism.languages.bash
+                                      return Prism.highlight(code, lang, ext)
+                                  }}
+                                  padding={10}
+                                  style={{ fontFamily: '"JetBrains Mono", "Fira Code", Consolas, monospace', minHeight: '100%' }}
+                                  readOnly
+                                />
+                              </div>
+                          )}
+                      </div>
+                  ))
+              )}
+          </div>
+          
+          {/* BOTTOM PANEL (Terminal/Diff) */}
+          {showBottomPanel && (
+              <div className="flex-shrink-0 flex flex-col border-t border-border/40 bg-[#1e1e1e] relative min-h-[100px] h-[250px] z-20">
+                  <div className="flex items-center px-4 h-8 border-b border-border/40 flex-shrink-0 gap-4 uppercase text-[10px] font-medium tracking-wide">
+                      <button onClick={() => setBottomPanelMode('terminal')} className={`${bottomPanelMode === 'terminal' ? 'text-white border-b border-white h-full' : 'text-gray-500 hover:text-gray-300'}`}>Terminal</button>
+                      <button onClick={() => setBottomPanelMode('diff')} className={`${bottomPanelMode === 'diff' ? 'text-brand border-b border-brand h-full' : 'text-gray-500 hover:text-gray-300'}`}>Diff Viewer</button>
+                      <button onClick={() => setShowBottomPanel(false)} className="ml-auto text-gray-500 hover:text-white">✕</button>
+                  </div>
+                  <div className="flex-1 overflow-hidden relative">
+                      {bottomPanelMode === 'terminal' && <Terminal project={project} />}
+                      {bottomPanelMode === 'diff' && <DiffViewer project={project} />}
+                  </div>
+              </div>
           )}
-          {showTerminal && <Terminal project={project} />}
         </div>
-        
-        {showDiff && project && (
-            <div className="w-[400px] border-l border-border flex-shrink-0 flex flex-col bg-bg1">
-                <DiffViewer project={project} />
-            </div>
-        )}
+      </div>
+
+      {/* ── STATUS BAR (Bottom) ────────────────────────── */}
+      <div className="h-[22px] bg-[#007acc] text-white flex items-center justify-between px-2 flex-shrink-0 z-30 text-[10.5px] font-medium select-none">
+          <div className="flex items-center gap-3">
+              <button className="hover:bg-white/20 px-1 rounded flex items-center gap-1" onClick={() => {setShowSidebar(true); setActivityBarMode('git')}}>
+                 ⎇ {gitData?.branch || 'main'} {gitData?.status?.trim() ? '*' : ''}
+              </button>
+              <span className="opacity-50">|</span>
+              <span className="flex items-center gap-1" title="Errors / Warnings">
+                 ❌ 0 ⚠️ 0
+              </span>
+              <span className="opacity-50">|</span>
+              <span className="animate-pulse">{lastMetrics.status !== 'Idle' ? lastMetrics.status : ''}</span>
+          </div>
+          
+          <div className="flex items-center gap-3">
+              <span title="Tokens used in last prompt">📊 {lastMetrics.in.toLocaleString()} IN / {lastMetrics.out.toLocaleString()} OUT</span>
+              <select value={model} onChange={e => setModel(e.target.value)}
+                className="bg-transparent hover:bg-white/20 outline-none cursor-pointer appearance-none px-1 rounded transition-colors" title="Select Model">
+                {cloudModels.length > 0 ? (
+                  <optgroup label="Massive Cloud Models">
+                    {cloudModels.map(m => <option className="text-black" key={m} value={`ollama/${m}`}>{m}</option>)}
+                  </optgroup>
+                ) : (
+                  <optgroup label="Massive Cloud Models">
+                    <option className="text-black" value="ollama/gpt-4o-proxy">gpt-4o-proxy</option>
+                    <option className="text-black" value="ollama/claude-3.5-sonnet-proxy">claude-3.5-sonnet-proxy</option>
+                    <option className="text-black" value="ollama/deepseek-v3.1:671b-cloud">deepseek-v3.1:671b-cloud</option>
+                  </optgroup>
+                )}
+                {localModels.length > 0 && (
+                  <optgroup label="Local Hardware">
+                    {localModels.map(m => <option className="text-black" key={m} value={`ollama/${m}`}>{m}</option>)}
+                  </optgroup>
+                )}
+              </select>
+              <div className="flex items-center gap-1 hover:bg-white/20 px-1 rounded cursor-pointer" onClick={() => {}}>
+                  <div className={`w-1.5 h-1.5 rounded-full ${ollamaOnline ? 'bg-white' : 'bg-red-300'}`} />
+                  {ollamaOnline ? 'Online' : 'Offline'}
+              </div>
+          </div>
+      </div>
+
+      {/* ── TOASTS ─────────────────────────────── */}
+      <div className="fixed bottom-10 right-4 z-50 flex flex-col gap-2">
+          {toasts.map(t => (
+              <div key={t.id} className="bg-[#252526] border border-border/50 text-gray-200 px-4 py-2 rounded shadow-xl text-xs flex items-center gap-2 animate-in slide-in-from-bottom-5">
+                  <span className={t.type === 'error' ? 'text-red-400' : 'text-brand'}>{t.type === 'error' ? '❌' : 'ℹ️'}</span>
+                  {t.msg}
+              </div>
+          ))}
       </div>
 
       {/* ── MODALS ─────────────────────────────── */}
       {showShortcuts && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => setShowShortcuts(false)}>
-           <div className="bg-bg1 border border-border rounded-xl shadow-xl w-full max-w-md overflow-hidden" onClick={e => e.stopPropagation()}>
-               <div className="px-4 py-3 border-b border-border flex justify-between items-center bg-bg2">
-                  <span className="font-bold text-white text-sm">Keyboard Shortcuts</span>
-                  <button onClick={() => setShowShortcuts(false)} className="text-gray-500 hover:text-white">✕</button>
+        <div className="fixed inset-0 z-50 flex items-start pt-20 justify-center bg-black/50 backdrop-blur-sm" onClick={() => setShowShortcuts(false)}>
+           <div className="bg-[#252526] border border-border/50 rounded-lg shadow-2xl w-full max-w-xl overflow-hidden" onClick={e => e.stopPropagation()}>
+               <div className="p-2 border-b border-border/50">
+                   <input type="text" autoFocus placeholder="Type a command or search..." className="w-full bg-transparent text-white outline-none px-2 py-1 text-sm font-mono" />
                </div>
-               <div className="p-4 flex flex-col gap-3 text-sm text-gray-300">
-                  <div className="flex justify-between"><span>Toggle Terminal</span> <kbd className="bg-bg3 px-2 py-0.5 rounded border border-border text-xs font-mono">Cmd/Ctrl + ~ (or UI toggle)</kbd></div>
-                  <div className="flex justify-between"><span>Send Message</span> <kbd className="bg-bg3 px-2 py-0.5 rounded border border-border text-xs font-mono">Enter</kbd></div>
-                  <div className="flex justify-between"><span>New Line in Chat</span> <kbd className="bg-bg3 px-2 py-0.5 rounded border border-border text-xs font-mono">Shift + Enter</kbd></div>
-                  <div className="flex justify-between"><span>Search Files</span> <kbd className="bg-bg3 px-2 py-0.5 rounded border border-border text-xs font-mono">Sidebar Searchbox</kbd></div>
-                  <div className="flex justify-between"><span>Show Shortcuts</span> <kbd className="bg-bg3 px-2 py-0.5 rounded border border-border text-xs font-mono">Cmd/Ctrl + K</kbd></div>
+               <div className="max-h-64 overflow-y-auto p-2 flex flex-col text-sm text-gray-300">
+                  <button className="flex justify-between items-center px-3 py-2 hover:bg-brand/20 hover:text-brand rounded text-left" onClick={() => {setShowSettings(true); setShowShortcuts(false)}}><span>Open Settings</span></button>
+                  <button className="flex justify-between items-center px-3 py-2 hover:bg-brand/20 hover:text-brand rounded text-left" onClick={() => {setShowPicker(true); setShowShortcuts(false)}}><span>Open Folder / Project</span></button>
+                  <button className="flex justify-between items-center px-3 py-2 hover:bg-brand/20 hover:text-brand rounded text-left" onClick={() => {setShowBottomPanel(b => !b); setShowShortcuts(false)}}><span>Toggle Terminal Panel</span><kbd className="font-mono text-xs">Cmd+~</kbd></button>
+                  <button className="flex justify-between items-center px-3 py-2 hover:bg-brand/20 hover:text-brand rounded text-left" onClick={() => {setActivityBarMode('chat'); setShowSidebar(true); setShowShortcuts(false)}}><span>Focus Chat Agent</span><kbd className="font-mono text-xs">Cmd+Shift+A</kbd></button>
                </div>
            </div>
         </div>
