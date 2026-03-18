@@ -116,6 +116,8 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
   const [statusText, setStatusText] = useState('')
   const [testCmd, setTestCmd] = useState('') // added for agent loop
   const [showTestCmd, setShowTestCmd] = useState(false)
+  const [droppedFiles, setDroppedFiles] = useState([]) // For drag and drop uploads
+  const [isDragging, setIsDragging] = useState(false)
   const wsRef = useRef(null)
   const bottomRef = useRef(null)
   const inputRef = useRef(null)
@@ -204,15 +206,20 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
           } : msg
         ))
         
-        // Basic agent loop trigger if test fails
-        if (data.loop_result && data.loop_result.startsWith('\n❌')) {
-           setTimeout(() => {
-              if (!running) {
-                  setInput(`The command failed:\n${data.loop_result}\n\nPlease fix the error.`);
-                  // Auto send
-                  // send(); // We let the user decide to click send for now to avoid infinite loops
-              }
-           }, 500);
+        // Basic agent loop trigger if test fails or if the AI ran a command autonomously
+        if (data.loop_result) {
+            const isError = data.loop_result.startsWith('\n❌');
+            const isAIExec = data.loop_result.includes('[Terminal Output');
+            
+            if (isError || isAIExec) {
+               setTimeout(() => {
+                  setInput(isError ? `The command failed:\n${data.loop_result}\n\nPlease fix the error.` : `Output:\n${data.loop_result}`);
+                  // If it's an AI-requested execute block, auto-send to complete the loop!
+                  if (isAIExec && !isError) {
+                      // document.getElementById('chat-send-btn').click(); // uncomment to auto-loop
+                  }
+               }, 500);
+            }
         }
 
         setRunning(false)
@@ -249,8 +256,12 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
       model,
       message: text,
       selected_files: selectedFiles,
-      test_cmd: testCmd // pass to backend to run on success
+      test_cmd: testCmd, // pass to backend to run on success
+      extra_files: droppedFiles.map(f => ({ name: f.name, content: f.content, type: f.type }))
     }))
+    
+    // Clear dropped files after sending
+    setDroppedFiles([])
 
     if (ws.readyState === WebSocket.OPEN) doSend()
     else ws.addEventListener('open', doSend, { once: true })
@@ -271,6 +282,73 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
   }
 
   const clearChat = () => setMessages([])
+  
+  const handleFileUpload = async (files) => {
+    if (!files || files.length === 0) return
+    const formData = new FormData()
+    
+    // Limit to 5 files at a time to prevent overload
+    Array.from(files).slice(0, 5).forEach(file => {
+        if (file.size > 5 * 1024 * 1024) {
+            alert(`File ${file.name} is larger than 5MB and was skipped.`)
+            return
+        }
+        formData.append('file', file)
+    })
+    
+    try {
+        // Upload one by one due to simple fastAPI endpoint setup
+        for (let i = 0; i < files.length; i++) {
+            if (i >= 5) break
+            const fd = new FormData()
+            fd.append('file', files[i])
+            
+            const res = await fetch('/api/upload', {
+                method: 'POST',
+                body: fd
+            })
+            
+            if (res.ok) {
+                const data = await res.json()
+                setDroppedFiles(prev => [...prev, data])
+            } else {
+                const errorText = await res.text()
+                alert(`Error uploading ${files[i].name}: ${errorText}`)
+            }
+        }
+    } catch (e) {
+        alert("Upload failed: " + e.message)
+    }
+  }
+
+  const onDrop = (e) => {
+    e.preventDefault()
+    setIsDragging(false)
+    handleFileUpload(e.dataTransfer.files)
+  }
+
+  const onDragOver = (e) => {
+    e.preventDefault()
+    setIsDragging(true)
+  }
+  
+  const onDragLeave = (e) => {
+    e.preventDefault()
+    setIsDragging(false)
+  }
+  
+  const onPaste = (e) => {
+    const items = e.clipboardData?.items
+    if (!items) return
+    
+    const files = []
+    for (let i = 0; i < items.length; i++) {
+        if (items[i].kind === 'file') {
+            files.push(items[i].getAsFile())
+        }
+    }
+    if (files.length > 0) handleFileUpload(files)
+  }
 
   return (
     <div className="flex flex-col flex-1 overflow-hidden min-h-0">
@@ -334,7 +412,30 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
       )}
 
       {/* Input area */}
-      <div className="border-t border-border bg-bg1 p-3">
+      <div className={`border-t border-border bg-bg1 p-3 relative ${isDragging ? 'bg-accent/10 border-accent' : ''}`}
+           onDrop={onDrop}
+           onDragOver={onDragOver}
+           onDragLeave={onDragLeave}
+           onPaste={onPaste}
+      >
+        {isDragging && (
+            <div className="absolute inset-0 z-10 bg-accent/20 backdrop-blur-[1px] flex items-center justify-center rounded-xl pointer-events-none">
+                <span className="text-white font-bold bg-bg0 px-4 py-2 rounded-full border border-accent">Drop files to attach</span>
+            </div>
+        )}
+        
+        {/* Dropped Files UI */}
+        {droppedFiles.length > 0 && (
+            <div className="flex flex-wrap gap-2 mb-2 px-1 max-h-24 overflow-y-auto">
+                {droppedFiles.map((f, i) => (
+                    <div key={i} className="flex items-center gap-1 bg-bg2 border border-border px-2 py-1 rounded text-xs text-gray-300">
+                        <span>{f.type === 'image' ? '🖼' : '📄'}</span>
+                        <span className="truncate max-w-[150px]">{f.filename}</span>
+                        <button onClick={() => setDroppedFiles(d => d.filter((_, idx) => idx !== i))} className="text-gray-500 hover:text-red ml-1">✕</button>
+                    </div>
+                ))}
+            </div>
+        )}
         {showTestCmd && (
           <div className="flex items-center gap-2 mb-2 px-1">
              <span className="text-xs text-gray-400">⚡ Auto-run after edits:</span>

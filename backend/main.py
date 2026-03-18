@@ -5,10 +5,11 @@ import sys
 import socket
 import subprocess
 import urllib.request
+import base64
 from pathlib import Path
 from pydantic import BaseModel
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, APIRouter
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, APIRouter, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import uvicorn
@@ -85,6 +86,33 @@ async def write_file(body: WriteBody):
         return {"ok": True}
     except Exception as e:
         return {"error": str(e)}
+
+# ── File Uploads (Drag & Drop) ─────────────────
+upload = APIRouter(prefix="/api/upload")
+MAX_UPLOAD_SIZE = 5 * 1024 * 1024  # 5 MB
+
+@upload.post("")
+async def upload_file(file: UploadFile = File(...)):
+    try:
+        contents = await file.read()
+        if len(contents) > MAX_UPLOAD_SIZE:
+            raise HTTPException(status_code=413, detail="File too large. Max size is 5MB.")
+            
+        ext = Path(file.filename).suffix.lower()
+        
+        # If it's an image, return base64 for vision models
+        if ext in ['.png', '.jpg', '.jpeg', '.webp']:
+            b64 = base64.b64encode(contents).decode('utf-8')
+            return {"filename": file.filename, "type": "image", "content": b64, "size": len(contents)}
+            
+        # Otherwise, assume it's text
+        text = contents.decode('utf-8', errors='replace')
+        return {"filename": file.filename, "type": "text", "content": text, "size": len(contents)}
+        
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ── Projects ───────────────────────────────────
@@ -232,6 +260,16 @@ Rules for patches:
 5. Do not output the entire file content, ONLY the sections that need changing!
 6. After your blocks, briefly explain what you changed.
 
+You can also run bash commands in the user's terminal to inspect the project.
+If you need to run a command (e.g. `ls -la` or `npm test`), output it like this:
+
+<<<EXECUTE
+npm run build
+>>>
+
+The user's environment will execute it, and the terminal output will be returned to you in your next turn.
+You can use <<<EXECUTE blocks freely to read files or run scripts to figure out what you need to do before writing patches.
+
 Make the changes immediately and completely."""
 
 def backup_project_git(project_path: str, msg: str = "AiderWeb auto-commit before AI edits"):
@@ -288,6 +326,15 @@ def read_project_files(project_path: str, explicit_files: list[str] = None) -> t
         try:
             content = f.read_text(encoding="utf-8", errors="replace")
             rel = str(f.relative_to(p)).replace("\\", "/")
+            
+            # Smart Trimming: If a file is huge and not explicitly selected, 
+            # we just show its skeleton (imports/classes/defs) or top 50 lines.
+            if not explicit_files and len(content) > 30000 and f.suffix in ['.py', '.js', '.jsx', '.ts', '.tsx']:
+                lines = content.split('\n')
+                skeleton = [l for l in lines if l.strip().startswith(('import ', 'from ', 'class ', 'def ', 'function ', 'export '))]
+                if len(skeleton) > 0:
+                    content = "\n".join(skeleton) + "\n\n... [File truncated: showing skeleton only due to size constraints. Use explicit select to load fully.]"
+            
             entry = f"=== FILE: {rel} ===\n{content}\n"
             if total_chars + len(entry) > MAX_TOTAL_CHARS:
                 # Include partial note
@@ -442,13 +489,30 @@ async def agent_ws(ws: WebSocket):
                 text=f"🧠 Sending {len(files_context):,} chars to {model}...")
 
             # Step 3: Build messages for Ollama
+            # Include dropped files into context
+            extra_files = msg.get("extra_files", [])
+            images_b64 = []
+            if extra_files:
+                files_context += "\n=== EXPLICITLY UPLOADED FILES ===\n"
+                for f in extra_files:
+                    if f["type"] == "text":
+                        files_context += f"=== UPLOADED FILE: {f['name']} ===\n{f['content']}\n"
+                    elif f["type"] == "image":
+                        images_b64.append(f["content"])
+                        files_context += f"=== UPLOADED IMAGE: {f['name']} (attached as vision context) ===\n"
+
             user_content = f"{files_context}\n\n---\nUSER REQUEST: {message}"
+            
+            user_message = {"role": "user", "content": user_content}
+            if images_b64:
+                user_message["images"] = images_b64
+
             ollama_messages = [
                 {"role": "system",    "content": SYSTEM_PROMPT},
-                {"role": "user",      "content": user_content},
+                user_message,
             ]
 
-            # Step 3: Stream response from Ollama
+            # Step 3: Send to Ollama
             ollama_model = model  # already stripped "ollama/" prefix
             payload = json.dumps({
                 "model":    ollama_model,
@@ -518,8 +582,26 @@ async def agent_ws(ws: WebSocket):
             # Final apply pass (catches any edits not yet written)
             edited_files = await asyncio.to_thread(apply_edits, project_path, full_response)
 
-            # --- Agentic Loop execution (e.g. run a test command if requested) ---
+            # --- Check if AI wants to execute a command ---
             agent_loop_result = ""
+            exec_match = re.search(r'<<<EXECUTE\n(.*?)\n>>>', full_response, re.DOTALL)
+            if exec_match:
+                cmd_to_run = exec_match.group(1).strip()
+                await send("agent_event", event="cmd", text=f"⚡ AI Executing: {cmd_to_run}")
+                try:
+                    res = subprocess.run(
+                        cmd_to_run, shell=True, cwd=project_path,
+                        capture_output=True, text=True, timeout=60
+                    )
+                    out = (res.stdout + res.stderr).strip()
+                    if not out: out = "[Command succeeded with no output]"
+                    agent_loop_result = f"\n[Terminal Output for '{cmd_to_run}']:\n```\n{out[:2000]}\n```"
+                    await send("agent_event", event="done", text=f"✅ Command executed")
+                except Exception as e:
+                    agent_loop_result = f"\n❌ Failed to run command: {e}"
+                    await send("agent_event", event="error", text=f"❌ Failed to run command: {e}")
+
+            # --- Explicit Test Loop execution ---
             test_cmd = msg.get("test_cmd", "").strip()
             
             if test_cmd and edited_files:
@@ -542,12 +624,13 @@ async def agent_ws(ws: WebSocket):
 
             summary = (
                 f"✅ Edited {len(edited_files)} file(s): {', '.join(edited_files[:5])}{agent_loop_result}"
-                if edited_files else "✅ Done"
+                if edited_files else ("✅ Done" if not agent_loop_result else "✅ Terminal command finished")
             )
             
             if not test_cmd or (test_cmd and not agent_loop_result.startswith("\n❌")):
                 await send("agent_event", event="done", text=summary)
             
+            # Send back loop_result. If it contains Terminal Output, the frontend will automatically send it back to the AI.
             await send("done", edited_files=edited_files, loop_result=agent_loop_result)
 
     except WebSocketDisconnect:
@@ -609,6 +692,7 @@ app.include_router(proj)
 app.include_router(git)
 app.include_router(mdl)
 app.include_router(scan)
+app.include_router(upload)
 
 # ── Serve built frontend ───────────────────────
 frontend = Path(__file__).parent.parent / "frontend" / "dist"
