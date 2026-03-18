@@ -83,7 +83,16 @@ export default function App() {
     
     loadGit()
     loadScan()
-    setSelectedFiles([]) // Reset context on project switch
+    
+    // Load persisted state (selected files, session)
+    fetch(`/api/projects/state?project_path=${encodeURIComponent(project.path)}`)
+        .then(r => r.json())
+        .then(d => {
+            if (d.selected_files) setSelectedFiles(d.selected_files)
+            else setSelectedFiles([])
+            // AgentChat component will handle loading the session_id internally via its own hook or we could pass it down.
+        })
+        .catch(() => setSelectedFiles([]))
     
     window.addEventListener('refresh_git', loadGit)
     return () => window.removeEventListener('refresh_git', loadGit)

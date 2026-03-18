@@ -199,8 +199,24 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
            if (d.sessions) setAvailableSessions(d.sessions)
        }).catch(() => {})
 
-    // Fetch chat history for this project and session
-    fetch(`/api/projects/history?project_path=${encodeURIComponent(project.path)}&session_id=${encodeURIComponent(session)}`)
+    // Fetch persisted session state first
+    fetch(`/api/projects/state?project_path=${encodeURIComponent(project.path)}`)
+       .then(r => r.json())
+       .then(state => {
+           const activeSess = state.session_id || 'default'
+           if (session !== activeSess) {
+               setSession(activeSess)
+               return // Will trigger re-render and re-fetch history in next effect tick
+           }
+           // Fetch chat history for this project and session
+           fetch(`/api/projects/history?project_path=${encodeURIComponent(project.path)}&session_id=${encodeURIComponent(activeSess)}`)
+               .then(r => r.json())
+               .then(d => {
+                   if (d.messages) setMessages(d.messages.map(m => ({ ...m, id: Date.now() + Math.random() })))
+                   else setMessages([])
+                   setHasLoadedHistory(true)
+               }).catch(() => { setMessages([]); setHasLoadedHistory(true) })
+       })
        .then(r => r.json())
        .then(d => {
            if (d.messages) setMessages(d.messages.map(m => ({ ...m, id: Date.now() + Math.random() })))
@@ -208,6 +224,16 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
            setHasLoadedHistory(true)
        }).catch(() => { setMessages([]); setHasLoadedHistory(true) })
   }, [project?.path, session])
+
+  // Save state (session + selected files) when they change
+  useEffect(() => {
+      if (!project) return
+      fetch(`/api/projects/state?project_path=${encodeURIComponent(project.path)}&session_id=${encodeURIComponent(session)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(selectedFiles || [])
+      }).catch(() => {})
+  }, [project, session, selectedFiles])
 
   // Save history on messages change
   useEffect(() => {

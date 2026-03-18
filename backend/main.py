@@ -301,9 +301,41 @@ async def github_webhook(payload: dict):
     asyncio.create_task(auto_review())
     return {"status": "review_started", "pr": pr_url}
 
+# ── Database & State Persistence ────────────────
+import sqlite3
+DB_PATH = Path.home() / ".aiderwebapp" / "aiderweb.db"
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS projects (path TEXT PRIMARY KEY, name TEXT, last_opened INTEGER)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS chat_sessions (id TEXT PRIMARY KEY, project_path TEXT, session_name TEXT, messages TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS project_state (project_path TEXT PRIMARY KEY, active_session TEXT, selected_files TEXT)''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def get_setting(key, default=""):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT value FROM settings WHERE key=?", (key,))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else default
+
+def set_setting(key, value):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value)))
+    conn.commit()
+    conn.close()
+
 # ── Projects & Settings & History ────────────────
 proj = APIRouter(prefix="/api/projects")
-SETTINGS_FILE = Path.home() / ".aiderwebapp" / "settings.json"
+SETTINGS_FILE = Path.home() / ".aiderwebapp" / "settings.json" # Legacy fallback
 CHROMA_DB_PATH = Path.home() / ".aiderwebapp" / "vector_db"
 
 if CHROMA_AVAILABLE:
@@ -311,59 +343,114 @@ if CHROMA_AVAILABLE:
 else:
     chroma_client = None
 
+@proj.get("/state")
+async def get_state(project_path: str):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT active_session, selected_files FROM project_state WHERE project_path=?", (project_path,))
+        row = c.fetchone()
+        conn.close()
+        if row:
+            return {"session_id": row[0] or "default", "selected_files": json.loads(row[1]) if row[1] else []}
+        return {"session_id": "default", "selected_files": []}
+    except Exception as e:
+        return {"session_id": "default", "selected_files": [], "error": str(e)}
+
+@proj.post("/state")
+async def save_state(project_path: str, session_id: str, selected_files: list):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("REPLACE INTO project_state (project_path, active_session, selected_files) VALUES (?, ?, ?)", 
+                 (project_path, session_id, json.dumps(selected_files)))
+        conn.commit()
+        conn.close()
+        return {"ok": True}
+    except Exception as e:
+        return {"error": str(e)}
+
 @proj.get("/sessions")
 async def get_sessions(project_path: str):
-    """List all saved chat sessions for a project."""
-    import hashlib
     try:
-        hashed = hashlib.md5(project_path.encode()).hexdigest()
-        sessions_dir = SETTINGS_FILE.parent / f"sessions_{hashed}"
-        if not sessions_dir.exists():
-            return {"sessions": ["default"]}
-            
-        sessions = [f.stem for f in sessions_dir.glob("*.json")]
-        if "default" not in sessions:
-            sessions.insert(0, "default")
-        return {"sessions": sorted(sessions)}
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT session_name FROM chat_sessions WHERE project_path=?", (project_path,))
+        rows = [r[0] for r in c.fetchall()]
+        conn.close()
+        if "default" not in rows:
+            rows.insert(0, "default")
+        return {"sessions": sorted(list(set(rows)))}
     except:
         return {"sessions": ["default"]}
 
-@proj.get("")
-async def get_projects():
+@proj.get("/history")
+async def get_history(project_path: str, session_id: str = "default"):
     try:
-        if PROJECTS_FILE.exists():
-            return json.loads(PROJECTS_FILE.read_text())
-        return []
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        sid = f"{project_path}::{session_id}"
+        c.execute("SELECT messages FROM chat_sessions WHERE id=?", (sid,))
+        row = c.fetchone()
+        conn.close()
+        if row and row[0]:
+            return {"messages": json.loads(row[0])}
+        return {"messages": []}
     except:
-        return []
+        return {"messages": []}
 
-class Project(BaseModel):
-    name: str
-    path: str
-
-@proj.post("")
-async def save_projects(projects: list[Project]):
-    PROJECTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    PROJECTS_FILE.write_text(json.dumps([p.dict() for p in projects]))
-    return {"ok": True}
-
-@proj.get("/settings")
-async def get_settings():
+@proj.post("/history")
+async def save_history(project_path: str, messages: list, session_id: str = "default"):
+    import hashlib
+    # Memory RAG extraction
     try:
-        if SETTINGS_FILE.exists():
-            s = json.loads(SETTINGS_FILE.read_text())
-            if "system_prompt" not in s:
-                s["system_prompt"] = DEFAULT_SYSTEM_PROMPT
-            return s
-        return {"system_prompt": DEFAULT_SYSTEM_PROMPT}
-    except:
-        return {"system_prompt": DEFAULT_SYSTEM_PROMPT}
-
-@proj.post("/settings")
-async def save_settings(settings: dict):
+        memory_updates = []
+        for m in messages:
+            if m.get("role") == "ai":
+                content = m.get("content", "")
+                import re
+                mem_matches = re.findall(r'<<<REMEMBER
+(.*?)
+>>>', content, re.DOTALL)
+                memory_updates.extend(mem_matches)
+        
+        hashed = hashlib.md5(project_path.encode()).hexdigest()
+        if memory_updates:
+            if CHROMA_AVAILABLE:
+                collection = chroma_client.get_or_create_collection(name=f"proj_{hashed}")
+                for mem in memory_updates:
+                    mem_id = hashlib.md5(mem.encode()).hexdigest()
+                    collection.upsert(documents=[mem.strip()], ids=[mem_id])
+            else:
+                mem_file = SETTINGS_FILE.parent / f"memory_{hashed}.json"
+                existing_mem = []
+                if mem_file.exists():
+                    try: existing_mem = json.loads(mem_file.read_text())
+                    except: pass
+                for new_mem in memory_updates:
+                    if new_mem.strip() not in existing_mem:
+                        existing_mem.append(new_mem.strip())
+                mem_file.parent.mkdir(parents=True, exist_ok=True)
+                mem_file.write_text(json.dumps(existing_mem))
+    except Exception: pass
+        
     try:
-        SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        SETTINGS_FILE.write_text(json.dumps(settings))
+        clean_msgs = []
+        for m in messages:
+            clean_msgs.append({
+                "role": m.get("role"),
+                "content": m.get("content"),
+                "events": m.get("events", []),
+                "editedFiles": m.get("editedFiles", [])
+            })
+            
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        sid = f"{project_path}::{session_id}"
+        c.execute("REPLACE INTO chat_sessions (id, project_path, session_name, messages) VALUES (?, ?, ?, ?)", 
+                 (sid, project_path, session_id, json.dumps(clean_msgs)))
+        conn.commit()
+        conn.close()
         return {"ok": True}
     except Exception as e:
         return {"error": str(e)}
