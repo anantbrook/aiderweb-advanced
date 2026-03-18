@@ -234,6 +234,7 @@ export default function App() {
                 <option value="ollama/qwen2.5-coder:32b">✨ qwen2.5-coder:32b</option>
                 <option value="ollama/gpt-4o-proxy">✨ gpt-4o-proxy</option>
                 <option value="ollama/claude-3.5-sonnet-proxy">✨ claude-3.5-sonnet-proxy</option>
+                <option value="ollama/jules-proxy">✨ jules-proxy</option>
               </optgroup>
             )}
             {localModels.length > 0 && (
