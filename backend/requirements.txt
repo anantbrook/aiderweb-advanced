@@ -5,11 +5,11 @@ pydantic==2.7.0
 python-multipart==0.0.12
 tree-sitter; python_version <= "3.12"
 tree-sitter-languages; python_version <= "3.12"
-beautifulsoup4==4.12.3
-duckduckgo-search==6.2.11
+beautifulsoup4
+duckduckgo-search
 openai==1.45.0
 anthropic==0.34.1
 groq==0.11.0
 tiktoken==0.7.0
 chromadb==0.4.24
-sentence-transformers==2.7.0
+sentence-transformers
