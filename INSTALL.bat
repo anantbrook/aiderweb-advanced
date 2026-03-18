@@ -30,7 +30,7 @@ pip install -r backend\requirements.txt
 
 echo.
 echo [4/5] Installing Playwright Browsers (for AI Vision tools)...
-playwright install chromium
+python -m playwright install chromium
 
 echo.
 echo [5/5] Installing Frontend Dependencies...
