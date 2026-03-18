@@ -7,6 +7,11 @@ import subprocess
 import urllib.request
 import base64
 from pathlib import Path
+try:
+    from tree_sitter_languages import get_language, get_parser
+    TS_AVAILABLE = True
+except ImportError:
+    TS_AVAILABLE = False
 from pydantic import BaseModel
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, APIRouter, File, UploadFile, HTTPException
@@ -267,8 +272,19 @@ If you need to run a command (e.g. `ls -la` or `npm test`), output it like this:
 npm run build
 >>>
 
-The user's environment will execute it, and the terminal output will be returned to you in your next turn.
-You can use <<<EXECUTE blocks freely to read files or run scripts to figure out what you need to do before writing patches.
+You can also browse the web to look up documentation or search for solutions.
+If you need to search the web, output:
+<<<SEARCH
+how to install react router
+>>>
+
+If you need to fetch a specific webpage and read its content, output:
+<<<BROWSE
+https://reactrouter.com/docs
+>>>
+
+The user's environment will execute these tools, and the output will be returned to you in your next turn.
+You can use these blocks freely to figure out what you need to do before writing patches.
 
 Make the changes immediately and completely."""
 
@@ -328,12 +344,46 @@ def read_project_files(project_path: str, explicit_files: list[str] = None) -> t
             rel = str(f.relative_to(p)).replace("\\", "/")
             
             # Smart Trimming: If a file is huge and not explicitly selected, 
-            # we just show its skeleton (imports/classes/defs) or top 50 lines.
+            # we just show its skeleton (imports/classes/defs) using Tree-Sitter AST if available.
             if not explicit_files and len(content) > 30000 and f.suffix in ['.py', '.js', '.jsx', '.ts', '.tsx']:
-                lines = content.split('\n')
-                skeleton = [l for l in lines if l.strip().startswith(('import ', 'from ', 'class ', 'def ', 'function ', 'export '))]
-                if len(skeleton) > 0:
-                    content = "\n".join(skeleton) + "\n\n... [File truncated: showing skeleton only due to size constraints. Use explicit select to load fully.]"
+                skeleton_lines = []
+                if TS_AVAILABLE:
+                    try:
+                        ext_map = {'.py': 'python', '.js': 'javascript', '.jsx': 'javascript', '.ts': 'typescript', '.tsx': 'tsx'}
+                        lang_name = ext_map.get(f.suffix)
+                        if lang_name:
+                            parser = get_parser(lang_name)
+                            tree = parser.parse(content.encode('utf-8'))
+                            
+                            def walk(node, depth=0):
+                                # Only grab structural nodes (functions, classes, methods, imports)
+                                structural_types = {
+                                    'class_definition', 'function_definition', 'method_definition', 
+                                    'import_statement', 'import_from_statement', 'export_statement',
+                                    'class_declaration', 'function_declaration', 'method_definition'
+                                }
+                                if node.type in structural_types:
+                                    # Get the first line of the node (the signature)
+                                    start_line = node.start_point[0]
+                                    sig = content.split('\n')[start_line].strip()
+                                    skeleton_lines.append("  " * depth + sig + " ...")
+                                    
+                                for child in node.children:
+                                    # Don't walk into the body of functions to save time
+                                    if child.type not in ('block', 'statement_block'):
+                                        walk(child, depth + (1 if node.type in structural_types else 0))
+                                        
+                            walk(tree.root_node)
+                    except Exception as e:
+                        print(f"Tree-sitter error on {f}: {e}")
+                
+                # Fallback to regex if TS fails or isn't installed
+                if not skeleton_lines:
+                    lines = content.split('\n')
+                    skeleton_lines = [l for l in lines if l.strip().startswith(('import ', 'from ', 'class ', 'def ', 'function ', 'export '))]
+                
+                if skeleton_lines:
+                    content = "\n".join(skeleton_lines) + "\n\n... [File truncated: showing AST skeleton only due to size constraints. Use explicit select to load fully.]" 
             
             entry = f"=== FILE: {rel} ===\n{content}\n"
             if total_chars + len(entry) > MAX_TOTAL_CHARS:
@@ -348,8 +398,8 @@ def read_project_files(project_path: str, explicit_files: list[str] = None) -> t
 
     return "\n".join(files_content), file_list
 
-def apply_edits(project_path: str, ai_response: str) -> list[str]:
-    """Parse diff patch blocks from AI response and apply them to disk."""
+def apply_edits(project_path: str, ai_response: str, dry_run=False) -> list[str]:
+    """Parse diff patch blocks from AI response. If dry_run=False, writes to disk."""
     import re
     edited = set()
     
@@ -407,14 +457,20 @@ def apply_edits(project_path: str, ai_response: str) -> list[str]:
                  if search_text.strip() in file_content:
                      file_content = file_content.replace(search_text.strip(), replace_text.strip())
         
-        try:
-            abs_path.parent.mkdir(parents=True, exist_ok=True)
-            abs_path.write_text(file_content, encoding="utf-8")
+        if not dry_run:
+            try:
+                abs_path.parent.mkdir(parents=True, exist_ok=True)
+                abs_path.write_text(file_content, encoding="utf-8")
+                edited.add(rel_path)
+            except Exception as e:
+                pass
+        else:
             edited.add(rel_path)
-        except Exception as e:
-            pass
             
     return list(edited)
+
+# Cache pending diffs in memory { websocket_id -> { project_path, diff_content, test_cmd } }
+PENDING_DIFFS = {}
 
 def strip_edits(response: str) -> str:
     """Remove diff code blocks from response for clean display."""
@@ -462,6 +518,55 @@ async def agent_ws(ws: WebSocket):
                     await send("cmd_result", output=str(e), success=False)
                 continue
 
+            if msg["type"] == "approve":
+                wid = id(ws)
+                if wid in PENDING_DIFFS:
+                    pd = PENDING_DIFFS[wid]
+                    # Step 1: Backup project to git before edits
+                    backed_up = await asyncio.to_thread(backup_project_git, pd["path"])
+                    if backed_up:
+                        await send("agent_event", event="cmd", text=f"💾 Saved a git backup of the project before edits")
+                        
+                    # Write to disk
+                    edited_files = await asyncio.to_thread(apply_edits, pd["path"], pd["content"], False)
+                    
+                    # Agentic Loop
+                    agent_loop_result = ""
+                    test_cmd = pd["test_cmd"]
+                    if test_cmd and edited_files:
+                        await send("agent_event", event="cmd", text=f"⚡ Auto-running test command: {test_cmd}")
+                        try:
+                            res = subprocess.run(
+                                test_cmd, shell=True, cwd=pd["path"],
+                                capture_output=True, text=True, timeout=120
+                            )
+                            if res.returncode == 0:
+                                agent_loop_result = "\n✅ Tests passed!"
+                                await send("agent_event", event="done", text="✅ Tests passed!")
+                            else:
+                                output = res.stdout + res.stderr
+                                agent_loop_result = f"\n❌ Command failed. Output:\n```\n{output[:1000]}...\n```"
+                                await send("agent_event", event="error", text="❌ Command failed")
+                        except Exception as e:
+                            agent_loop_result = f"\n❌ Failed to run command: {e}"
+                            await send("agent_event", event="error", text=f"❌ Failed to run command: {e}")
+                            
+                    summary = f"✅ Edited {len(edited_files)} file(s): {', '.join(edited_files[:5])}{agent_loop_result}"
+                    if not test_cmd or (test_cmd and not agent_loop_result.startswith("\n❌")):
+                        await send("agent_event", event="done", text=summary)
+                    
+                    await send("done", edited_files=edited_files, loop_result=agent_loop_result, status="approved")
+                    del PENDING_DIFFS[wid]
+                continue
+
+            if msg["type"] == "reject":
+                wid = id(ws)
+                if wid in PENDING_DIFFS:
+                    del PENDING_DIFFS[wid]
+                    await send("agent_event", event="done", text="❌ Changes rejected by user.")
+                    await send("done", edited_files=[], loop_result="", status="rejected")
+                continue
+
             if msg["type"] != "run":
                 continue
 
@@ -474,12 +579,7 @@ async def agent_ws(ws: WebSocket):
             await send("agent_event", event="start", text=f"🤖 Starting with {model}...")
             await send("agent_event", event="scan",  text=f"📂 Reading project: {Path(project_path).name}")
 
-            # Step 1: Backup project to git before edits
-            backed_up = await asyncio.to_thread(backup_project_git, project_path)
-            if backed_up:
-                await send("agent_event", event="cmd", text=f"💾 Saved a git backup of the project before edits")
-
-            # Step 2: Read selected files or all files
+            # Step 1: Read selected files or all files
             selected_files = msg.get("selected_files", [])
             files_context, file_list = await asyncio.to_thread(read_project_files, project_path, selected_files)
 
@@ -554,14 +654,14 @@ async def agent_ws(ws: WebSocket):
                                         await send("chunk", text=display)
                                     current_chunk = ""
 
-                                # Detect and apply edits in real-time as they complete
-                                if ">>>END" in full_response:
+                                # Detect edits in real-time (dry run)
+                                if "</replace_block>" in full_response:
                                     newly_edited = await asyncio.to_thread(
-                                        apply_edits, project_path, full_response
+                                        apply_edits, project_path, full_response, True
                                     )
                                     for f in newly_edited:
                                         await send("agent_event", event="edit",
-                                            text=f"✏️ Written: {f}")
+                                            text=f"✏️ Proposed edit: {f}")
 
                             if chunk_data.get("done"):
                                 break
@@ -579,13 +679,48 @@ async def agent_ws(ws: WebSocket):
                 if display:
                     await send("chunk", text=display)
 
-            # Final apply pass (catches any edits not yet written)
-            edited_files = await asyncio.to_thread(apply_edits, project_path, full_response)
+            # Dry run to find all proposed edits
+            edited_files = await asyncio.to_thread(apply_edits, project_path, full_response, True)
 
-            # --- Check if AI wants to execute a command ---
+            # --- Check if AI wants to execute a command, search, or browse ---
             agent_loop_result = ""
+            
+            # Web Search Tool
+            search_match = re.search(r'<<<SEARCH\n(.*?)\n>>>', full_response, re.DOTALL)
+            if search_match:
+                query = search_match.group(1).strip()
+                await send("agent_event", event="think", text=f"🔍 Searching web: {query}")
+                try:
+                    from duckduckgo_search import DDGS
+                    results = DDGS().text(query, max_results=5)
+                    out = "\n".join([f"- {r['title']} ({r['href']})\n  {r['body']}" for r in results])
+                    agent_loop_result = f"\n[Web Search Results for '{query}']:\n{out}"
+                    await send("agent_event", event="done", text=f"✅ Search completed")
+                except Exception as e:
+                    agent_loop_result = f"\n❌ Failed to search: {e}"
+                    await send("agent_event", event="error", text=f"❌ Search failed")
+            
+            # Web Browse Tool
+            browse_match = re.search(r'<<<BROWSE\n(.*?)\n>>>', full_response, re.DOTALL)
+            if browse_match and not agent_loop_result:
+                url = browse_match.group(1).strip()
+                await send("agent_event", event="think", text=f"🌐 Browsing: {url}")
+                try:
+                    from bs4 import BeautifulSoup
+                    import urllib.request as urllib_req
+                    req = urllib_req.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                    html = urllib_req.urlopen(req, timeout=10).read()
+                    soup = BeautifulSoup(html, 'html.parser')
+                    text = soup.get_text(separator=' ', strip=True)
+                    agent_loop_result = f"\n[Webpage Content from '{url}']:\n```\n{text[:3000]}\n```"
+                    await send("agent_event", event="done", text=f"✅ Browsing completed")
+                except Exception as e:
+                    agent_loop_result = f"\n❌ Failed to browse: {e}"
+                    await send("agent_event", event="error", text=f"❌ Browsing failed")
+
+            # Terminal Tool
             exec_match = re.search(r'<<<EXECUTE\n(.*?)\n>>>', full_response, re.DOTALL)
-            if exec_match:
+            if exec_match and not agent_loop_result:
                 cmd_to_run = exec_match.group(1).strip()
                 await send("agent_event", event="cmd", text=f"⚡ AI Executing: {cmd_to_run}")
                 try:
@@ -601,37 +736,19 @@ async def agent_ws(ws: WebSocket):
                     agent_loop_result = f"\n❌ Failed to run command: {e}"
                     await send("agent_event", event="error", text=f"❌ Failed to run command: {e}")
 
-            # --- Explicit Test Loop execution ---
-            test_cmd = msg.get("test_cmd", "").strip()
-            
-            if test_cmd and edited_files:
-                await send("agent_event", event="cmd", text=f"⚡ Auto-running test command: {test_cmd}")
-                try:
-                    res = subprocess.run(
-                        test_cmd, shell=True, cwd=project_path,
-                        capture_output=True, text=True, timeout=120
-                    )
-                    if res.returncode == 0:
-                        agent_loop_result = "\n✅ Tests passed!"
-                        await send("agent_event", event="done", text="✅ Tests passed!")
-                    else:
-                        output = res.stdout + res.stderr
-                        agent_loop_result = f"\n❌ Command failed. Output:\n```\n{output[:1000]}...\n```"
-                        await send("agent_event", event="error", text="❌ Command failed")
-                except Exception as e:
-                    agent_loop_result = f"\n❌ Failed to run command: {e}"
-                    await send("agent_event", event="error", text=f"❌ Failed to run command: {e}")
-
-            summary = (
-                f"✅ Edited {len(edited_files)} file(s): {', '.join(edited_files[:5])}{agent_loop_result}"
-                if edited_files else ("✅ Done" if not agent_loop_result else "✅ Terminal command finished")
-            )
-            
-            if not test_cmd or (test_cmd and not agent_loop_result.startswith("\n❌")):
+            if edited_files and not agent_loop_result:
+                # Store pending diffs and wait for user approval
+                PENDING_DIFFS[id(ws)] = {
+                    "path": project_path,
+                    "content": full_response,
+                    "test_cmd": msg.get("test_cmd", "").strip()
+                }
+                await send("agent_event", event="think", text=f"⏳ Waiting for user to approve {len(edited_files)} file changes...")
+                await send("pending_approval", edited_files=edited_files)
+            else:
+                summary = "✅ Terminal command finished" if agent_loop_result else "✅ Done"
                 await send("agent_event", event="done", text=summary)
-            
-            # Send back loop_result. If it contains Terminal Output, the frontend will automatically send it back to the AI.
-            await send("done", edited_files=edited_files, loop_result=agent_loop_result)
+                await send("done", edited_files=[], loop_result=agent_loop_result, status="direct")
 
     except WebSocketDisconnect:
         pass

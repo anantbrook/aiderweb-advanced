@@ -34,6 +34,14 @@ function fmt(text) {
       return `<div class="my-2 rounded-lg border border-yellow/30 bg-yellow/5 overflow-hidden text-xs font-mono"><div class="bg-yellow/10 px-3 py-1 text-yellow-500 border-b border-yellow/20 flex items-center gap-2"><span>⚡</span><span>Executing Terminal Command</span></div><div class="p-3 text-gray-300 overflow-x-auto">${esc(c.trim())}</div></div>`
   })
   
+  // Format SEARCH and BROWSE blocks
+  text = text.replace(/<<<SEARCH\n([\s\S]*?)\n>>>/g, (_, c) => {
+      return `<div class="my-2 rounded-lg border border-blue/30 bg-blue/5 overflow-hidden text-xs font-mono"><div class="bg-blue/10 px-3 py-1 text-blue-400 border-b border-blue/20 flex items-center gap-2"><span>🔍</span><span>Web Search</span></div><div class="p-3 text-gray-300 overflow-x-auto">${esc(c.trim())}</div></div>`
+  })
+  text = text.replace(/<<<BROWSE\n([\s\S]*?)\n>>>/g, (_, c) => {
+      return `<div class="my-2 rounded-lg border border-purple/30 bg-purple/5 overflow-hidden text-xs font-mono"><div class="bg-purple/10 px-3 py-1 text-purple-400 border-b border-purple/20 flex items-center gap-2"><span>🌐</span><span>Browsing URL</span></div><div class="p-3 text-gray-300 overflow-x-auto">${esc(c.trim())}</div></div>`
+  })
+  
   text = text.replace(/```(\w+)?\n?([\s\S]*?)```/g,
     (_, l, c) => `<div class="my-2 rounded-lg border border-border bg-bg0 overflow-hidden text-xs"><div class="bg-bg2 px-3 py-1 text-gray-400 border-b border-border">${l || 'code'}</div><pre class="p-3 overflow-x-auto text-gray-300 font-mono"><code>${esc(c.trim())}</code></pre></div>`)
   
@@ -96,6 +104,22 @@ function Message({ msg }) {
             dangerouslySetInnerHTML={{ __html: fmt(msg.content) }}
             style={{ wordBreak: 'break-word' }}
           />
+        )}
+        
+        {/* Approve / Reject buttons */}
+        {msg.pendingApproval && (
+            <div className="mt-2 flex gap-2">
+                <button 
+                  onClick={() => msg.onApprove(msg.id)}
+                  className="bg-green-600/20 hover:bg-green-600 text-green-400 hover:text-white px-3 py-1 rounded text-xs border border-green-600/50 transition-colors">
+                  Approve Changes
+                </button>
+                <button 
+                  onClick={() => msg.onReject(msg.id)}
+                  className="bg-red-600/20 hover:bg-red-600 text-red-400 hover:text-white px-3 py-1 rounded text-xs border border-red-600/50 transition-colors">
+                  Reject
+                </button>
+            </div>
         )}
 
         {/* Streaming cursor */}
@@ -224,21 +248,29 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
           msg.id === msgId ? { ...msg, content: aiContent } : msg
         ))
 
+      } else if (data.type === 'pending_approval') {
+          // Waiting for user to click approve/reject
+          setMessages(m => m.map(msg =>
+            msg.id === msgId ? { ...msg, streaming: false, pendingApproval: true } : msg
+          ))
+          setStatusText('Waiting for approval...')
+
       } else if (data.type === 'done') {
         // All done
         setMessages(m => m.map(msg =>
           msg.id === msgId ? {
             ...msg,
             streaming: false,
+            pendingApproval: false,
             content: aiContent + (data.loop_result || ''),
             editedFiles: data.edited_files || []
           } : msg
         ))
         
         // Basic agent loop trigger if test fails or if the AI ran a command autonomously
-        if (data.loop_result) {
+        if (data.loop_result && data.status !== 'rejected') {
             const isError = data.loop_result.startsWith('\n❌');
-            const isAIExec = data.loop_result.includes('[Terminal Output');
+            const isAIExec = data.loop_result.includes('[Terminal Output') || data.loop_result.includes('[Web Search Results') || data.loop_result.includes('[Webpage Content');
             
             if (isError || isAIExec) {
                setTimeout(() => {
@@ -253,7 +285,9 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
 
         setRunning(false)
         setStatusText('')
-        ws.removeEventListener('message', onMsg)
+        if (data.status !== 'approved') {
+            ws.removeEventListener('message', onMsg)
+        }
 
       } else if (data.type === 'error') {
         setMessages(m => m.map(msg =>
@@ -298,6 +332,17 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
 
   const stop = () => {
     wsRef.current?.send(JSON.stringify({ type: 'stop' }))
+  }
+  
+  const approveDiffs = (msgId) => {
+      wsRef.current?.send(JSON.stringify({ type: 'approve' }))
+      setMessages(m => m.map(msg => msg.id === msgId ? { ...msg, pendingApproval: false } : msg))
+      setRunning(true)
+  }
+  
+  const rejectDiffs = (msgId) => {
+      wsRef.current?.send(JSON.stringify({ type: 'reject' }))
+      setMessages(m => m.map(msg => msg.id === msgId ? { ...msg, pendingApproval: false } : msg))
   }
 
   const onKey = (e) => {
@@ -422,7 +467,7 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
             )}
           </div>
         ) : (
-          messages.map((msg, i) => <Message key={i} msg={msg} />)
+          messages.map((msg, i) => <Message key={i} msg={{...msg, onApprove: approveDiffs, onReject: rejectDiffs}} />)
         )}
 
         <div ref={bottomRef} />
