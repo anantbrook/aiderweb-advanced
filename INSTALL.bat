@@ -25,7 +25,7 @@ if not exist "backend\venv" (
 echo.
 echo [3/4] Installing Python dependencies...
 call backend\venv\Scripts\activate.bat
-pip install --upgrade pip
+py -m pip install --upgrade pip
 pip install -r backend\requirements.txt
 
 echo.
@@ -37,7 +37,6 @@ echo [5/5] Installing Frontend Dependencies...
 cd frontend
 call npm install
 cd ..
-
 
 echo.
 echo ===================================================

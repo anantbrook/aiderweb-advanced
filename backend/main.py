@@ -284,8 +284,6 @@ async def save_history(project_path: str, messages: list):
         
     try:
         hashed = hashlib.md5(project_path.encode()).hexdigest()
-    try:
-        hashed = hashlib.md5(project_path.encode()).hexdigest()
         hist_file = SETTINGS_FILE.parent / f"history_{hashed}.json"
         hist_file.parent.mkdir(parents=True, exist_ok=True)
         # We don't save full stream buffers, just clean content
