@@ -12,6 +12,12 @@ try:
     TS_AVAILABLE = True
 except ImportError:
     TS_AVAILABLE = False
+
+try:
+    import chromadb
+    CHROMA_AVAILABLE = True
+except ImportError:
+    CHROMA_AVAILABLE = False
 from pydantic import BaseModel
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, APIRouter, File, UploadFile, HTTPException
@@ -219,9 +225,108 @@ async def upload_file(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+# ── GitHub Webhook Auto-Reviewer ────────────────
+gh = APIRouter(prefix="/api/github")
+
+@gh.post("/webhook")
+async def github_webhook(payload: dict):
+    """
+    Listen for Pull Request events from GitHub. 
+    If a PR is opened, spawn a background agent to automatically review it and push fixes!
+    """
+    action = payload.get("action")
+    if action not in ["opened", "synchronize"]:
+        return {"status": "ignored"}
+        
+    pr_data = payload.get("pull_request", {})
+    pr_url = pr_data.get("html_url")
+    pr_title = pr_data.get("title")
+    diff_url = pr_data.get("diff_url")
+    
+    if not diff_url:
+        return {"status": "ignored", "reason": "No diff URL"}
+        
+    import urllib.request as req
+    diff_req = req.Request(diff_url, headers={"Accept": "application/vnd.github.v3.diff"})
+    diff_content = ""
+    try:
+        with req.urlopen(diff_req) as response:
+            diff_content = response.read().decode('utf-8')
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+    # Background task to run the AI Reviewer autonomously
+    async def auto_review():
+        try:
+            settings = {}
+            if SETTINGS_FILE.exists():
+                try: settings = json.loads(SETTINGS_FILE.read_text())
+                except: pass
+                
+            api_key = settings.get("openai_key")
+            if not api_key: return # Needs an API key to run headless
+            
+            sys_prompt = REVIEWER_SYSTEM_PROMPT
+            user_content = f"Please review this new Pull Request titled '{pr_title}'.\\n\\nHere is the diff:\\n```diff\\n{diff_content}\\n```"
+            
+            # Use OpenAI as default headless reviewer
+            import openai
+            client = openai.AsyncOpenAI(api_key=api_key)
+            resp = await client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": user_content}
+                ],
+                temperature=0.1
+            )
+            
+            review_text = resp.choices[0].message.content
+            
+            # Post review back to GitHub using Token
+            token = settings.get("github_token")
+            if token and "comments_url" in pr_data:
+                comment_url = pr_data["comments_url"]
+                data = json.dumps({"body": f"🤖 **AiderWeb Auto-Review:**\\n\\n{review_text}"}).encode("utf-8")
+                post_req = req.Request(comment_url, data=data, headers={
+                    "Authorization": f"token {token}",
+                    "Accept": "application/vnd.github.v3+json",
+                }, method="POST")
+                with req.urlopen(post_req):
+                    pass # Comment posted
+                    
+        except Exception as e:
+            print(f"Auto-review failed: {e}")
+
+    asyncio.create_task(auto_review())
+    return {"status": "review_started", "pr": pr_url}
+
 # ── Projects & Settings & History ────────────────
 proj = APIRouter(prefix="/api/projects")
 SETTINGS_FILE = Path.home() / ".aiderwebapp" / "settings.json"
+CHROMA_DB_PATH = Path.home() / ".aiderwebapp" / "vector_db"
+
+if CHROMA_AVAILABLE:
+    chroma_client = chromadb.PersistentClient(path=str(CHROMA_DB_PATH))
+else:
+    chroma_client = None
+
+@proj.get("/sessions")
+async def get_sessions(project_path: str):
+    """List all saved chat sessions for a project."""
+    import hashlib
+    try:
+        hashed = hashlib.md5(project_path.encode()).hexdigest()
+        sessions_dir = SETTINGS_FILE.parent / f"sessions_{hashed}"
+        if not sessions_dir.exists():
+            return {"sessions": ["default"]}
+            
+        sessions = [f.stem for f in sessions_dir.glob("*.json")]
+        if "default" not in sessions:
+            sessions.insert(0, "default")
+        return {"sessions": sorted(sessions)}
+    except:
+        return {"sessions": ["default"]}
 
 @proj.get("")
 async def get_projects():
@@ -264,12 +369,12 @@ async def save_settings(settings: dict):
         return {"error": str(e)}
 
 @proj.get("/history")
-async def get_history(project_path: str):
-    """Get chat history for a specific project based on a hashed file path."""
+async def get_history(project_path: str, session_id: str = "default"):
+    """Get chat history for a specific project and session."""
     import hashlib
     try:
         hashed = hashlib.md5(project_path.encode()).hexdigest()
-        hist_file = SETTINGS_FILE.parent / f"history_{hashed}.json"
+        hist_file = SETTINGS_FILE.parent / f"sessions_{hashed}" / f"{session_id}.json"
         if hist_file.exists():
             return {"messages": json.loads(hist_file.read_text())}
         return {"messages": []}
@@ -277,10 +382,10 @@ async def get_history(project_path: str):
         return {"messages": []}
 
 @proj.post("/history")
-async def save_history(project_path: str, messages: list):
+async def save_history(project_path: str, messages: list, session_id: str = "default"):
     import hashlib
     try:
-        # Before saving, extract any Memory blocks the AI decided to save
+        # Save RAG memory to Vector DB instead of JSON if available
         memory_updates = []
         for m in messages:
             if m.get("role") == "ai":
@@ -291,25 +396,29 @@ async def save_history(project_path: str, messages: list):
         
         hashed = hashlib.md5(project_path.encode()).hexdigest()
         if memory_updates:
-            mem_file = SETTINGS_FILE.parent / f"memory_{hashed}.json"
-            existing_mem = []
-            if mem_file.exists():
-                try: existing_mem = json.loads(mem_file.read_text())
-                except: pass
-            
-            for new_mem in memory_updates:
-                if new_mem.strip() not in existing_mem:
-                    existing_mem.append(new_mem.strip())
-            
-            mem_file.parent.mkdir(parents=True, exist_ok=True)
-            mem_file.write_text(json.dumps(existing_mem))
-
+            if CHROMA_AVAILABLE:
+                collection = chroma_client.get_or_create_collection(name=f"proj_{hashed}")
+                for i, mem in enumerate(memory_updates):
+                    # Upsert with stable ID based on hash of content
+                    mem_id = hashlib.md5(mem.encode()).hexdigest()
+                    collection.upsert(documents=[mem.strip()], ids=[mem_id])
+            else:
+                mem_file = SETTINGS_FILE.parent / f"memory_{hashed}.json"
+                existing_mem = []
+                if mem_file.exists():
+                    try: existing_mem = json.loads(mem_file.read_text())
+                    except: pass
+                for new_mem in memory_updates:
+                    if new_mem.strip() not in existing_mem:
+                        existing_mem.append(new_mem.strip())
+                mem_file.parent.mkdir(parents=True, exist_ok=True)
+                mem_file.write_text(json.dumps(existing_mem))
     except Exception:
         pass
         
     try:
         hashed = hashlib.md5(project_path.encode()).hexdigest()
-        hist_file = SETTINGS_FILE.parent / f"history_{hashed}.json"
+        hist_file = SETTINGS_FILE.parent / f"sessions_{hashed}" / f"{session_id}.json"
         hist_file.parent.mkdir(parents=True, exist_ok=True)
         # We don't save full stream buffers, just clean content
         clean_msgs = []
@@ -878,14 +987,23 @@ async def agent_ws(ws: WebSocket):
             # Step 1: Read selected files or all files
             selected_files = msg.get("selected_files", [])
             
-            # Load project memory
+            # Load project memory (Vector Search for relevant facts if ChromaDB is active)
             import hashlib
             hashed = hashlib.md5(project_path.encode()).hexdigest()
-            mem_file = SETTINGS_FILE.parent / f"memory_{hashed}.json"
             project_memory = []
-            if mem_file.exists():
-                try: project_memory = json.loads(mem_file.read_text())
-                except: pass
+            if CHROMA_AVAILABLE and chroma_client:
+                try:
+                    collection = chroma_client.get_collection(name=f"proj_{hashed}")
+                    results = collection.query(query_texts=[message], n_results=5)
+                    if results and results['documents']:
+                        project_memory = results['documents'][0]
+                except Exception:
+                    pass
+            else:
+                mem_file = SETTINGS_FILE.parent / f"memory_{hashed}.json"
+                if mem_file.exists():
+                    try: project_memory = json.loads(mem_file.read_text())
+                    except: pass
                 
             # Read Settings for custom Prompt
             settings = {}
@@ -903,7 +1021,7 @@ async def agent_ws(ws: WebSocket):
                 sys_prompt = settings.get("system_prompt", DEFAULT_SYSTEM_PROMPT)
                 
             if project_memory:
-                sys_prompt += "\n\n# MEMORY (Learned facts from previous sessions):\n"
+                sys_prompt += "\n\n# RELEVANT MEMORY (Vector RAG facts from previous sessions):\n"
                 for i, mem in enumerate(project_memory):
                     sys_prompt += f"{i+1}. {mem}\n"
                 sys_prompt += "\nYou can update memory by outputting <<<REMEMBER\nFact to save\n>>>" 
@@ -1195,6 +1313,7 @@ app.include_router(git)
 app.include_router(mdl)
 app.include_router(scan)
 app.include_router(upload)
+app.include_router(gh)
 
 # ── Serve built frontend ───────────────────────
 frontend = Path(__file__).parent.parent / "frontend" / "dist"

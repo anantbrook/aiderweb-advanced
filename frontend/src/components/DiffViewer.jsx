@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { DiffEditor } from '@monaco-editor/react'
 
 export default function DiffViewer({ project }) {
     const [diff, setDiff] = useState('')

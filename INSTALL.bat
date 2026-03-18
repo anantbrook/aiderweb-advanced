@@ -29,7 +29,7 @@ py -m pip install --upgrade pip
 pip install -r backend\requirements.txt
 
 echo.
-echo [4/4] Installing Playwright Browsers (for AI Vision tools)...
+echo [4/5] Installing Playwright Browsers (for AI Vision tools)...
 playwright install chromium
 
 echo.

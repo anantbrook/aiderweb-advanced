@@ -165,6 +165,8 @@ const SUGGESTIONS = [
 export default function AgentChat({ project, model, ollamaOnline, selectedFiles, setSelectedFiles }) {
   const [messages, setMessages] = useState([])
   const [hasLoadedHistory, setHasLoadedHistory] = useState(false)
+  const [session, setSession] = useState('default')
+  const [availableSessions, setAvailableSessions] = useState(['default'])
   const [input, setInput] = useState('')
   const [running, setRunning] = useState(false)
   const [statusText, setStatusText] = useState('')
@@ -189,15 +191,22 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
        setMessages([])
        return
     }
-    // Fetch chat history for this project
-    fetch(`/api/projects/history?project_path=${encodeURIComponent(project.path)}`)
+    // Fetch chat sessions for this project
+    fetch(`/api/projects/sessions?project_path=${encodeURIComponent(project.path)}`)
+       .then(r => r.json())
+       .then(d => {
+           if (d.sessions) setAvailableSessions(d.sessions)
+       }).catch(() => {})
+
+    // Fetch chat history for this project and session
+    fetch(`/api/projects/history?project_path=${encodeURIComponent(project.path)}&session_id=${encodeURIComponent(session)}`)
        .then(r => r.json())
        .then(d => {
            if (d.messages) setMessages(d.messages.map(m => ({ ...m, id: Date.now() + Math.random() })))
            else setMessages([])
            setHasLoadedHistory(true)
        }).catch(() => { setMessages([]); setHasLoadedHistory(true) })
-  }, [project?.path])
+  }, [project?.path, session])
 
   // Save history on messages change
   useEffect(() => {
@@ -205,12 +214,12 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
       // Prevent saving while streaming or pending to keep it clean
       if (messages.some(m => m.streaming || m.pendingApproval)) return
       
-      fetch(`/api/projects/history?project_path=${encodeURIComponent(project.path)}`, {
+      fetch(`/api/projects/history?project_path=${encodeURIComponent(project.path)}&session_id=${encodeURIComponent(session)}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(messages)
       }).catch(() => {})
-  }, [messages, project, hasLoadedHistory])
+  }, [messages, project, hasLoadedHistory, session])
 
   // Auto scroll & Request Notifications
   useEffect(() => {
