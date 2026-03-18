@@ -164,6 +164,7 @@ const SUGGESTIONS = [
 
 export default function AgentChat({ project, model, ollamaOnline, selectedFiles, setSelectedFiles }) {
   const [messages, setMessages] = useState([])
+  const [hasLoadedHistory, setHasLoadedHistory] = useState(false)
   const [input, setInput] = useState('')
   const [running, setRunning] = useState(false)
   const [statusText, setStatusText] = useState('')
@@ -176,17 +177,45 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
   const inputRef = useRef(null)
   const currentMsgId = useRef(null)
 
-  // Reset on project change
+  // Load/Reset on project change
   useEffect(() => {
-    setMessages([])
     setInput('')
     setRunning(false)
     setStatusText('')
+    setHasLoadedHistory(false)
+    if (!project) {
+       setMessages([])
+       return
+    }
+    // Fetch chat history for this project
+    fetch(`/api/projects/history?project_path=${encodeURIComponent(project.path)}`)
+       .then(r => r.json())
+       .then(d => {
+           if (d.messages) setMessages(d.messages.map(m => ({ ...m, id: Date.now() + Math.random() })))
+           else setMessages([])
+           setHasLoadedHistory(true)
+       }).catch(() => { setMessages([]); setHasLoadedHistory(true) })
   }, [project?.path])
 
-  // Auto scroll
+  // Save history on messages change
+  useEffect(() => {
+      if (!project || !hasLoadedHistory) return
+      // Prevent saving while streaming or pending to keep it clean
+      if (messages.some(m => m.streaming || m.pendingApproval)) return
+      
+      fetch(`/api/projects/history?project_path=${encodeURIComponent(project.path)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(messages)
+      }).catch(() => {})
+  }, [messages, project, hasLoadedHistory])
+
+  // Auto scroll & Request Notifications
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission()
+    }
   }, [messages])
 
   // Connect WebSocket
@@ -274,10 +303,16 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
             
             if (isError || isAIExec) {
                setTimeout(() => {
-                  setInput(isError ? `The command failed:\n${data.loop_result}\n\nPlease fix the error.` : `Output:\n${data.loop_result}`);
-                  // If it's an AI-requested execute block, auto-send to complete the loop!
+                  const autoReply = isError ? `The command failed:\n${data.loop_result}\n\nPlease fix the error.` : `Output:\n${data.loop_result}`;
+                  setInput(autoReply);
+                  
+                  // Auto-loop the AI
                   if (isAIExec && !isError) {
-                      // document.getElementById('chat-send-btn').click(); // uncomment to auto-loop
+                      const btn = document.getElementById('chat-send-btn')
+                      if (btn && !btn.disabled) {
+                          btn.dataset.autoMsg = autoReply
+                          btn.click()
+                      }
                   }
                }, 500);
             }
@@ -285,6 +320,14 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
 
         setRunning(false)
         setStatusText('')
+        
+        // Notifications
+        if ('Notification' in window && Notification.permission === 'granted') {
+            if (document.hidden) {
+                new Notification('AiderWeb Task Complete', { body: 'The agent has finished working.' })
+            }
+        }
+        
         if (data.status !== 'approved') {
             ws.removeEventListener('message', onMsg)
         }
@@ -545,8 +588,25 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
           </div>
 
           <button
-            onClick={running ? stop : send}
-            disabled={!project && !running}
+            id="chat-send-btn"
+            onClick={(e) => {
+                if (running) stop()
+                else {
+                    // check dataset for auto reply hack
+                    if (e.target.dataset.autoMsg) {
+                        const tmp = input
+                        setInput(e.target.dataset.autoMsg)
+                        setTimeout(() => {
+                            // Needs state update tick
+                            send()
+                        }, 50)
+                        delete e.target.dataset.autoMsg
+                    } else {
+                        send()
+                    }
+                }
+            }}
+            disabled={(!project && !running) || isDragging}
             className={`w-10 h-10 rounded-xl flex items-center justify-center text-sm font-bold transition-all flex-shrink-0
               ${running
                 ? 'bg-red/20 border border-red/50 text-red hover:bg-red hover:text-white'
@@ -563,6 +623,17 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
             {project && <span>· {project.path.split(/[\\/]/).pop()}</span>}
             <button onClick={() => setShowTestCmd(!showTestCmd)} className={`px-2 py-0.5 rounded border transition-colors ${showTestCmd || testCmd ? 'bg-accent/20 border-accent/50 text-accent' : 'border-border hover:text-gray-400'}`}>
                ⚡ Test Loop {testCmd ? 'ON' : 'OFF'}
+            </button>
+            <button onClick={() => {
+                if (!project) return
+                fetch(`/api/git/undo?path=${encodeURIComponent(project.path)}`, { method: 'POST' })
+                    .then(r => r.json())
+                    .then(d => {
+                        if (d.ok) setMessages(m => [...m, { role: 'ai', content: '↩️ **Reverted last AI edit** (`git reset --hard HEAD~1`).\n\nThe project state has been restored to what it was before my last change.' }])
+                        else alert("Failed to undo: " + d.error)
+                    })
+            }} className="px-2 py-0.5 rounded border border-border hover:border-red-500/50 hover:bg-red-500/10 hover:text-red-400 transition-colors ml-2" title="Git reset hard HEAD~1">
+               ↩️ Undo Last AI Edit
             </button>
           </div>
           <button onClick={clearChat} className="text-xs text-gray-600 hover:text-gray-400 transition-colors">

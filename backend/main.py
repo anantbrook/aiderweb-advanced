@@ -18,6 +18,15 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, APIRouter, File, Up
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import uvicorn
+import os
+
+try:
+    import openai
+    from anthropic import Anthropic
+    from groq import Groq
+    API_PROVIDERS_AVAILABLE = True
+except ImportError:
+    API_PROVIDERS_AVAILABLE = False
 
 app = FastAPI(title="AiderWeb")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -92,6 +101,71 @@ async def write_file(body: WriteBody):
     except Exception as e:
         return {"error": str(e)}
 
+class FileActionBody(BaseModel):
+    path: str
+    new_path: str = ""
+
+@fs.post("/create")
+async def create_file(body: FileActionBody):
+    try:
+        p = Path(body.path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.touch(exist_ok=True)
+        return {"ok": True}
+    except Exception as e:
+        return {"error": str(e)}
+
+@fs.post("/rename")
+async def rename_file(body: FileActionBody):
+    try:
+        p = Path(body.path)
+        np = Path(body.new_path)
+        np.parent.mkdir(parents=True, exist_ok=True)
+        p.rename(np)
+        return {"ok": True}
+    except Exception as e:
+        return {"error": str(e)}
+
+@fs.delete("/delete")
+async def delete_file(path: str):
+    try:
+        p = Path(path)
+        if p.is_file():
+            p.unlink()
+        elif p.is_dir():
+            import shutil
+            shutil.rmtree(p)
+        return {"ok": True}
+    except Exception as e:
+        return {"error": str(e)}
+
+@fs.get("/search")
+async def search_files(path: str, q: str):
+    try:
+        p = Path(path)
+        results = []
+        for f in p.rglob("*"):
+            if not f.is_file() or any(s in f.parts for s in SKIP): continue
+            if f.suffix.lower() not in TEXT_EXTS: continue
+            
+            try:
+                content = f.read_text(encoding="utf-8", errors="ignore")
+                lines = content.split('\n')
+                for i, line in enumerate(lines):
+                    if q.lower() in line.lower():
+                        results.append({
+                            "file": str(f.relative_to(p)).replace("\\", "/"),
+                            "line": i + 1,
+                            "text": line.strip()
+                        })
+                        if len(results) > 100:
+                            break
+            except: continue
+        return {"results": results[:100]}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 # ── File Uploads (Drag & Drop) ─────────────────
 upload = APIRouter(prefix="/api/upload")
 MAX_UPLOAD_SIZE = 5 * 1024 * 1024  # 5 MB
@@ -120,8 +194,9 @@ async def upload_file(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-# ── Projects ───────────────────────────────────
+# ── Projects & Settings & History ────────────────
 proj = APIRouter(prefix="/api/projects")
+SETTINGS_FILE = Path.home() / ".aiderwebapp" / "settings.json"
 
 @proj.get("")
 async def get_projects():
@@ -142,6 +217,58 @@ async def save_projects(projects: list[Project]):
     PROJECTS_FILE.write_text(json.dumps([p.dict() for p in projects]))
     return {"ok": True}
 
+@proj.get("/settings")
+async def get_settings():
+    try:
+        if SETTINGS_FILE.exists():
+            return json.loads(SETTINGS_FILE.read_text())
+        return {}
+    except:
+        return {}
+
+@proj.post("/settings")
+async def save_settings(settings: dict):
+    try:
+        SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SETTINGS_FILE.write_text(json.dumps(settings))
+        return {"ok": True}
+    except Exception as e:
+        return {"error": str(e)}
+
+@proj.get("/history")
+async def get_history(project_path: str):
+    """Get chat history for a specific project based on a hashed file path."""
+    import hashlib
+    try:
+        hashed = hashlib.md5(project_path.encode()).hexdigest()
+        hist_file = SETTINGS_FILE.parent / f"history_{hashed}.json"
+        if hist_file.exists():
+            return {"messages": json.loads(hist_file.read_text())}
+        return {"messages": []}
+    except:
+        return {"messages": []}
+
+@proj.post("/history")
+async def save_history(project_path: str, messages: list):
+    import hashlib
+    try:
+        hashed = hashlib.md5(project_path.encode()).hexdigest()
+        hist_file = SETTINGS_FILE.parent / f"history_{hashed}.json"
+        hist_file.parent.mkdir(parents=True, exist_ok=True)
+        # We don't save full stream buffers, just clean content
+        clean_msgs = []
+        for m in messages:
+            clean_msgs.append({
+                "role": m.get("role"),
+                "content": m.get("content"),
+                "events": m.get("events", []),
+                "editedFiles": m.get("editedFiles", [])
+            })
+        hist_file.write_text(json.dumps(clean_msgs))
+        return {"ok": True}
+    except Exception as e:
+        return {"error": str(e)}
+
 
 # ── Git ────────────────────────────────────────
 git = APIRouter(prefix="/api/git")
@@ -153,6 +280,36 @@ async def git_status(path: str):
         "status": run_cmd(["git", "status", "--short"],        cwd=path),
         "log":    run_cmd(["git", "log", "--oneline", "-8"],   cwd=path),
     }
+
+class GitCommitBody(BaseModel):
+    path: str
+    message: str
+
+@git.post("/commit")
+async def git_commit(body: GitCommitBody):
+    try:
+        run_cmd(["git", "add", "."], cwd=body.path)
+        out = run_cmd(["git", "commit", "-m", body.message], cwd=body.path)
+        return {"ok": True, "output": out}
+    except Exception as e:
+        return {"error": str(e)}
+
+@git.post("/push")
+async def git_push(path: str):
+    try:
+        out = run_cmd(["git", "push"], cwd=path)
+        return {"ok": True, "output": out}
+    except Exception as e:
+        return {"error": str(e)}
+
+@git.post("/undo")
+async def git_undo(path: str):
+    """Reverts the last commit (which is usually an auto-commit by the AI)."""
+    try:
+        out = run_cmd(["git", "reset", "--hard", "HEAD~1"], cwd=path)
+        return {"ok": True, "output": out}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 # ── Models ─────────────────────────────────────
@@ -630,64 +787,112 @@ async def agent_ws(ws: WebSocket):
                 user_message,
             ]
 
-            # Step 3: Send to Ollama
-            ollama_model = model  # already stripped "ollama/" prefix
-            payload = json.dumps({
-                "model":    ollama_model,
-                "messages": ollama_messages,
-                "stream":   True,
-                "options":  {"temperature": 0.1, "num_predict": 8192},
-            }).encode()
-
+            # Step 3: Send to Model Provider
             full_response = ""
             current_chunk = ""
+            
+            # Helper to stream chunks
+            async def handle_chunk(token):
+                nonlocal full_response, current_chunk
+                if not token: return
+                full_response += token
+                current_chunk += token
+                if len(current_chunk) > 50 or '\n' in current_chunk:
+                    display = strip_edits(current_chunk)
+                    if display:
+                        await send("chunk", text=display)
+                    current_chunk = ""
+                if "</replace_block>" in full_response:
+                    newly_edited = await asyncio.to_thread(apply_edits, project_path, full_response, True)
+                    for f in newly_edited:
+                        await send("agent_event", event="edit", text=f"✏️ Proposed edit: {f}")
 
             try:
-                import urllib.request as req
-                request = req.Request(
-                    "http://localhost:11434/api/chat",
-                    data=payload,
-                    headers={"Content-Type": "application/json"},
-                    method="POST"
-                )
+                # Get API keys from settings
+                settings = {}
+                if SETTINGS_FILE.exists():
+                    try: settings = json.loads(SETTINGS_FILE.read_text())
+                    except: pass
 
-                with req.urlopen(request, timeout=300) as response:
-                    for line in response:
-                        if stop_flag.is_set():
-                            break
-                        line = line.decode("utf-8", errors="replace").strip()
-                        if not line:
-                            continue
-                        try:
-                            chunk_data = json.loads(line)
-                            token = chunk_data.get("message", {}).get("content", "")
-                            if token:
-                                full_response += token
-                                current_chunk += token
+                elif model == "gpt-4o-proxy":
+                    # OpenAI API
+                    api_key = settings.get("openai_key")
+                    if not api_key:
+                        raise Exception("OpenAI API Key not found in Settings.")
+                    client = openai.AsyncOpenAI(api_key=api_key)
+                    
+                    openai_msgs = [{"role": "system", "content": SYSTEM_PROMPT}]
+                    user_msg = {"role": "user", "content": [{"type": "text", "text": user_content}]}
+                    if images_b64:
+                        for img in images_b64:
+                            user_msg["content"].append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img}"}})
+                    openai_msgs.append(user_msg)
+                            
+                    stream = await client.chat.completions.create(
+                        model="gpt-4o",
+                        messages=openai_msgs,
+                        temperature=0.1,
+                        stream=True
+                    )
+                    async for chunk in stream:
+                        if stop_flag.is_set(): break
+                        await handle_chunk(chunk.choices[0].delta.content or "")
 
-                                # Stream clean text (without edit blocks) in chunks
-                                if len(current_chunk) > 50 or '\n' in current_chunk:
-                                    display = strip_edits(current_chunk)
-                                    if display:
-                                        await send("chunk", text=display)
-                                    current_chunk = ""
+                elif model == "claude-3.5-sonnet-proxy":
+                    # Anthropic API
+                    api_key = settings.get("anthropic_key")
+                    if not api_key:
+                        raise Exception("Anthropic API Key not found in Settings.")
+                    
+                    # Claude requires system prompt separated
+                    sys_prompt = ollama_messages[0]["content"]
+                    user_msg = ollama_messages[1]
+                    
+                    content_arr = []
+                    if "images" in user_msg and user_msg["images"]:
+                        for img in user_msg["images"]:
+                            content_arr.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": img}})
+                    content_arr.append({"type": "text", "text": user_msg["content"]})
+                    
+                    client = Anthropic(api_key=api_key)
+                    # Anthropic python sdk stream is synchronous, we run it in thread
+                    def run_anthropic():
+                        # Simple synchronous call because async stream from sync is tricky in this loop
+                        response = client.messages.create(
+                            model="claude-3-5-sonnet-20241022",
+                            max_tokens=8192,
+                            system=sys_prompt,
+                            messages=[{"role": "user", "content": user_msg["content"]}], # Vision unsupported in this quick mock
+                        )
+                        return response.content[0].text
+                    text = await asyncio.to_thread(run_anthropic)
+                    await handle_chunk(text)
 
-                                # Detect edits in real-time (dry run)
-                                if "</replace_block>" in full_response:
-                                    newly_edited = await asyncio.to_thread(
-                                        apply_edits, project_path, full_response, True
-                                    )
-                                    for f in newly_edited:
-                                        await send("agent_event", event="edit",
-                                            text=f"✏️ Proposed edit: {f}")
+                else:
+                    # Ollama API
+                    ollama_model = model.replace("ollama/", "")
+                    payload = json.dumps({
+                        "model":    ollama_model,
+                        "messages": ollama_messages,
+                        "stream":   True,
+                        "options":  {"temperature": 0.1, "num_predict": 8192},
+                    }).encode()
+                    import urllib.request as req
+                    request = req.Request("http://localhost:11434/api/chat", data=payload, headers={"Content-Type": "application/json"}, method="POST")
 
-                            if chunk_data.get("done"):
-                                break
-                        except json.JSONDecodeError:
-                            continue
+                    with req.urlopen(request, timeout=300) as response:
+                        for line in response:
+                            if stop_flag.is_set(): break
+                            line = line.decode("utf-8", errors="replace").strip()
+                            if not line: continue
+                            try:
+                                chunk_data = json.loads(line)
+                                await handle_chunk(chunk_data.get("message", {}).get("content", ""))
+                                if chunk_data.get("done"): break
+                            except json.JSONDecodeError: continue
 
             except Exception as e:
-                await send("agent_event", event="error", text=f"⚠️ Ollama error: {str(e)}")
+                await send("agent_event", event="error", text=f"⚠️ Model error: {str(e)}")
                 await send("done", edited_files=[])
                 continue
 

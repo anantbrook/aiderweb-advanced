@@ -1,17 +1,43 @@
 import { useState } from 'react'
 
 export default function Settings({ model, localModels, onModelChange, onClose, onModelsRefresh }) {
-  const [mapTokens,  setMapTokens]  = useState(localStorage.getItem('map_tokens')     || '4096')
-  const [autoCommit, setAutoCommit] = useState(localStorage.getItem('auto_commit')    === 'true')
-  const [aiderArgs,  setAiderArgs]  = useState(localStorage.getItem('aider_extra_args') || '')
+  const [mapTokens,  setMapTokens]  = useState('4096')
+  const [autoCommit, setAutoCommit] = useState(true)
+  const [aiderArgs,  setAiderArgs]  = useState('')
+  const [openaiKey,  setOpenaiKey]  = useState('')
+  const [anthropicKey, setAnthropicKey] = useState('')
+  const [groqKey, setGroqKey]       = useState('')
+  const [julesKey, setJulesKey]     = useState('')
   const [deleting,   setDeleting]   = useState(false)
   const [deleteMsg,  setDeleteMsg]  = useState('')
 
+  useEffect(() => {
+    fetch('/api/projects/settings').then(r => r.json()).then(d => {
+        setMapTokens(d.map_tokens || '4096')
+        setAutoCommit(d.auto_commit !== false)
+        setAiderArgs(d.aider_extra_args || '')
+        setOpenaiKey(d.openai_key || '')
+        setAnthropicKey(d.anthropic_key || '')
+        setGroqKey(d.groq_key || '')
+        setJulesKey(d.jules_key || '')
+    }).catch(() => {})
+  }, [])
+
   const save = () => {
-    localStorage.setItem('map_tokens',      mapTokens)
-    localStorage.setItem('auto_commit',     autoCommit)
-    localStorage.setItem('aider_extra_args', aiderArgs)
-    onClose()
+    const s = {
+       map_tokens: mapTokens,
+       auto_commit: autoCommit,
+       aider_extra_args: aiderArgs,
+       openai_key: openaiKey,
+       anthropic_key: anthropicKey,
+       groq_key: groqKey,
+       jules_key: julesKey
+    }
+    fetch('/api/projects/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(s)
+    }).then(() => onClose()).catch(() => onClose())
   }
 
   const deleteLocal = async () => {

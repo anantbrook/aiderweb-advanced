@@ -22,6 +22,7 @@ export default function App() {
   const [gitData, setGitData]           = useState(null)
   const [projectStats, setProjectStats] = useState(null)
   const [sidebarW, setSidebarW]         = useState(220)
+  const [fileViewer, setFileViewer]     = useState(null)
   const resizing = useRef(false)
 
   const project = projects[activeTab] || null
@@ -70,13 +71,30 @@ export default function App() {
     setSelectedFiles([]) // Reset context on project switch
   }, [project?.path])
 
-  // Sidebar resize listeners
+  // Sidebar resize listeners & File Viewer Event
   useEffect(() => {
     const onMove = e => { if (resizing.current) setSidebarW(Math.max(160, Math.min(480, e.clientX))) }
     const onUp   = () => { resizing.current = false; document.body.style.cursor = '' }
+    
+    const onOpenFile = (e) => {
+        setFileViewer({ path: e.detail.path, name: e.detail.name, content: 'Loading...' })
+        fetch(`/api/fs/read?path=${encodeURIComponent(e.detail.path)}`)
+            .then(r => r.json())
+            .then(d => {
+                if (d.content !== undefined) setFileViewer(fv => fv ? { ...fv, content: d.content } : null)
+                else setFileViewer(fv => fv ? { ...fv, content: 'Error loading file' } : null)
+            })
+    }
+    
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup',   onUp)
-    return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
+    window.addEventListener('open_file', onOpenFile)
+    
+    return () => { 
+        window.removeEventListener('mousemove', onMove)
+        window.removeEventListener('mouseup', onUp) 
+        window.removeEventListener('open_file', onOpenFile)
+    }
   }, [])
 
   const openProject = p => {
@@ -217,12 +235,12 @@ export default function App() {
           <>
             <div className="flex flex-col bg-bg1 border-r border-border flex-shrink-0"
               style={{ width: sidebarW }}>
-              <div className="flex items-center px-3 py-2 border-b border-border flex-shrink-0">
+              <div className="flex items-center justify-between px-3 py-2 border-b border-border flex-shrink-0">
                 <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider truncate">
                   {project?.name || 'Explorer'}
                 </span>
               </div>
-              <div className="flex-1 overflow-y-auto min-h-0">
+              <div className="flex-1 overflow-y-auto min-h-0 relative">
                 {project ? (
                   <FileTree root={project.path} selectedFiles={selectedFiles} setSelectedFiles={setSelectedFiles} />
                 ) : (
@@ -246,7 +264,25 @@ export default function App() {
         )}
 
         <div className="flex-1 flex flex-col overflow-hidden min-w-0 min-h-0">
-          <AgentChat project={project} model={model} ollamaOnline={ollamaOnline} selectedFiles={selectedFiles} setSelectedFiles={setSelectedFiles} />
+          {fileViewer ? (
+             <div className="flex-1 flex flex-col bg-bg0 overflow-hidden">
+                <div className="flex items-center justify-between px-4 py-2 bg-bg1 border-b border-border">
+                   <div className="flex items-center gap-2">
+                       <span className="text-gray-400">📄</span>
+                       <span className="text-white text-sm font-medium">{fileViewer.name}</span>
+                       <span className="text-gray-600 text-xs ml-2">{fileViewer.path}</span>
+                   </div>
+                   <button onClick={() => setFileViewer(null)} className="text-gray-500 hover:text-white w-6 h-6 flex items-center justify-center rounded hover:bg-bg3">✕</button>
+                </div>
+                <div className="flex-1 overflow-auto p-4 bg-bg0">
+                    <pre className="text-gray-300 text-sm font-mono leading-relaxed" style={{ tabSize: 4 }}>
+                        <code>{fileViewer.content}</code>
+                    </pre>
+                </div>
+             </div>
+          ) : (
+             <AgentChat project={project} model={model} ollamaOnline={ollamaOnline} selectedFiles={selectedFiles} setSelectedFiles={setSelectedFiles} />
+          )}
           {showTerminal && <Terminal project={project} />}
         </div>
       </div>
