@@ -10,3 +10,4 @@ duckduckgo-search==6.2.11
 openai==1.45.0
 anthropic==0.34.1
 groq==0.11.0
+tiktoken==0.7.0

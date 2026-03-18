@@ -169,6 +169,7 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
   const [running, setRunning] = useState(false)
   const [statusText, setStatusText] = useState('')
   const [testCmd, setTestCmd] = useState('') // added for agent loop
+  const [recording, setRecording] = useState(false)
   const [showTestCmd, setShowTestCmd] = useState(false)
   const [droppedFiles, setDroppedFiles] = useState([]) // For drag and drop uploads
   const [isDragging, setIsDragging] = useState(false)
@@ -398,6 +399,28 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
     e.target.style.height = Math.min(e.target.scrollHeight, 180) + 'px'
   }
 
+  const handleVoice = () => {
+      if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+          alert('Speech recognition is not supported in this browser.')
+          return
+      }
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+      const r = new SpeechRecognition()
+      r.continuous = false
+      r.interimResults = false
+      
+      r.onstart = () => setRecording(true)
+      r.onresult = (e) => {
+          const t = e.results[0][0].transcript
+          setInput(prev => prev ? prev + ' ' + t : t)
+          setRecording(false)
+      }
+      r.onerror = () => setRecording(false)
+      r.onend = () => setRecording(false)
+      
+      r.start()
+  }
+
   const clearChat = () => setMessages([])
   
   const handleFileUpload = async (files) => {
@@ -567,7 +590,7 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
         )}
 
         <div className="flex gap-2 items-end">
-          <div className={`flex-1 bg-bg2 border rounded-xl px-3 py-2.5 transition-colors
+          <div className={`flex-1 flex gap-2 bg-bg2 border rounded-xl px-3 py-2.5 transition-colors
             ${running ? 'border-accent/30' : 'border-border focus-within:border-accent'}`}>
             <textarea
               ref={inputRef}
@@ -585,6 +608,15 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
               style={{ maxHeight: 180 }}
               className="w-full bg-transparent text-white text-sm outline-none resize-none placeholder-gray-600 select-text leading-relaxed"
             />
+            
+            <button 
+              onClick={handleVoice} 
+              disabled={running}
+              className={`w-6 h-6 flex items-center justify-center rounded-full self-end mb-0.5 flex-shrink-0 transition-colors
+                 ${recording ? 'bg-red-500 text-white animate-pulse' : 'text-gray-500 hover:text-white hover:bg-bg3'}`}
+              title="Voice Input">
+              🎤
+            </button>
           </div>
 
           <button
@@ -618,9 +650,9 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
         </div>
 
         <div className="flex items-center justify-between mt-2 px-1">
-          <div className="flex items-center gap-3 text-xs text-gray-600">
-            <span>⬡ Reads entire project automatically</span>
-            {project && <span>· {project.path.split(/[\\/]/).pop()}</span>}
+          <div className="flex items-center gap-2 text-xs text-gray-600 flex-wrap">
+            <span className="hidden sm:inline">⬡ Reads entire project automatically</span>
+            {project && <span className="hidden sm:inline">· {project.path.split(/[\\/]/).pop()}</span>}
             <button onClick={() => setShowTestCmd(!showTestCmd)} className={`px-2 py-0.5 rounded border transition-colors ${showTestCmd || testCmd ? 'bg-accent/20 border-accent/50 text-accent' : 'border-border hover:text-gray-400'}`}>
                ⚡ Test Loop {testCmd ? 'ON' : 'OFF'}
             </button>
@@ -632,13 +664,29 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
                         if (d.ok) setMessages(m => [...m, { role: 'ai', content: '↩️ **Reverted last AI edit** (`git reset --hard HEAD~1`).\n\nThe project state has been restored to what it was before my last change.' }])
                         else alert("Failed to undo: " + d.error)
                     })
-            }} className="px-2 py-0.5 rounded border border-border hover:border-red-500/50 hover:bg-red-500/10 hover:text-red-400 transition-colors ml-2" title="Git reset hard HEAD~1">
+            }} className="px-2 py-0.5 rounded border border-border hover:border-red-500/50 hover:bg-red-500/10 hover:text-red-400 transition-colors" title="Git reset hard HEAD~1">
                ↩️ Undo Last AI Edit
             </button>
           </div>
-          <button onClick={clearChat} className="text-xs text-gray-600 hover:text-gray-400 transition-colors">
-            Clear
-          </button>
+          
+          <div className="flex items-center gap-2">
+              <button 
+                onClick={() => {
+                   const md = messages.map(m => `**${m.role.toUpperCase()}**:\n${m.content || m.events.map(e => `[${e.event}] ${e.text}`).join('\n')}`).join('\n\n---\n\n')
+                   const blob = new Blob([md], {type: 'text/markdown'})
+                   const url = URL.createObjectURL(blob)
+                   const a = document.createElement('a')
+                   a.href = url
+                   a.download = `chat_export_${new Date().toISOString()}.md`
+                   a.click()
+                }} 
+                className="text-xs text-gray-500 hover:text-gray-300 transition-colors" title="Export Chat History">
+                Export
+              </button>
+              <button onClick={clearChat} className="text-xs text-gray-500 hover:text-red-400 transition-colors">
+                Clear
+              </button>
+          </div>
         </div>
       </div>
     </div>

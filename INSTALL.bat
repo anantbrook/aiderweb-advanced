@@ -33,6 +33,13 @@ echo [4/4] Installing Playwright Browsers (for AI Vision tools)...
 playwright install chromium
 
 echo.
+echo [5/5] Installing Frontend Dependencies...
+cd frontend
+call npm install
+cd ..
+
+
+echo.
 echo ===================================================
 echo   INSTALLATION COMPLETE!
 echo ===================================================

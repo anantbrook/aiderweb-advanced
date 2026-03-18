@@ -221,10 +221,13 @@ async def save_projects(projects: list[Project]):
 async def get_settings():
     try:
         if SETTINGS_FILE.exists():
-            return json.loads(SETTINGS_FILE.read_text())
-        return {}
+            s = json.loads(SETTINGS_FILE.read_text())
+            if "system_prompt" not in s:
+                s["system_prompt"] = DEFAULT_SYSTEM_PROMPT
+            return s
+        return {"system_prompt": DEFAULT_SYSTEM_PROMPT}
     except:
-        return {}
+        return {"system_prompt": DEFAULT_SYSTEM_PROMPT}
 
 @proj.post("/settings")
 async def save_settings(settings: dict):
@@ -251,6 +254,36 @@ async def get_history(project_path: str):
 @proj.post("/history")
 async def save_history(project_path: str, messages: list):
     import hashlib
+    try:
+        # Before saving, extract any Memory blocks the AI decided to save
+        memory_updates = []
+        for m in messages:
+            if m.get("role") == "ai":
+                content = m.get("content", "")
+                import re
+                mem_matches = re.findall(r'<<<REMEMBER\n(.*?)\n>>>', content, re.DOTALL)
+                memory_updates.extend(mem_matches)
+        
+        hashed = hashlib.md5(project_path.encode()).hexdigest()
+        if memory_updates:
+            mem_file = SETTINGS_FILE.parent / f"memory_{hashed}.json"
+            existing_mem = []
+            if mem_file.exists():
+                try: existing_mem = json.loads(mem_file.read_text())
+                except: pass
+            
+            for new_mem in memory_updates:
+                if new_mem.strip() not in existing_mem:
+                    existing_mem.append(new_mem.strip())
+            
+            mem_file.parent.mkdir(parents=True, exist_ok=True)
+            mem_file.write_text(json.dumps(existing_mem))
+
+    except Exception:
+        pass
+        
+    try:
+        hashed = hashlib.md5(project_path.encode()).hexdigest()
     try:
         hashed = hashlib.md5(project_path.encode()).hexdigest()
         hist_file = SETTINGS_FILE.parent / f"history_{hashed}.json"
@@ -280,6 +313,11 @@ async def git_status(path: str):
         "status": run_cmd(["git", "status", "--short"],        cwd=path),
         "log":    run_cmd(["git", "log", "--oneline", "-8"],   cwd=path),
     }
+
+@git.get("/diff")
+async def git_diff(path: str):
+    """Returns the unstaged git diff for the project."""
+    return {"diff": run_cmd(["git", "diff"], cwd=path)}
 
 class GitCommitBody(BaseModel):
     path: str
@@ -756,6 +794,28 @@ async def agent_ws(ws: WebSocket):
 
             # Step 1: Read selected files or all files
             selected_files = msg.get("selected_files", [])
+            
+            # Load project memory
+            import hashlib
+            hashed = hashlib.md5(project_path.encode()).hexdigest()
+            mem_file = SETTINGS_FILE.parent / f"memory_{hashed}.json"
+            project_memory = []
+            if mem_file.exists():
+                try: project_memory = json.loads(mem_file.read_text())
+                except: pass
+                
+            # Read Settings for custom Prompt
+            settings = {}
+            if SETTINGS_FILE.exists():
+                try: settings = json.loads(SETTINGS_FILE.read_text())
+                except: pass
+            
+            sys_prompt = settings.get("system_prompt", DEFAULT_SYSTEM_PROMPT)
+            if project_memory:
+                sys_prompt += "\n\n# MEMORY (Learned facts from previous sessions):\n"
+                for i, mem in enumerate(project_memory):
+                    sys_prompt += f"{i+1}. {mem}\n"
+                sys_prompt += "\nYou can update memory by outputting <<<REMEMBER\nFact to save\n>>>" 
             files_context, file_list = await asyncio.to_thread(read_project_files, project_path, selected_files)
 
             await send("agent_event", event="scan",
@@ -783,9 +843,20 @@ async def agent_ws(ws: WebSocket):
                 user_message["images"] = images_b64
 
             ollama_messages = [
-                {"role": "system",    "content": SYSTEM_PROMPT},
+                {"role": "system",    "content": sys_prompt},
                 user_message,
             ]
+            
+            # Token Budget calculation
+            token_count = 0
+            if TIKTOKEN_AVAILABLE:
+                try:
+                    enc = tiktoken.get_encoding("cl100k_base")
+                    token_count += len(enc.encode(sys_prompt))
+                    token_count += len(enc.encode(user_content))
+                except: pass
+            
+            await send("agent_event", event="think", text=f"📊 Token Budget: ~{token_count:,} / 128,000 max context")
 
             # Step 3: Send to Model Provider
             full_response = ""
@@ -821,7 +892,7 @@ async def agent_ws(ws: WebSocket):
                         raise Exception("OpenAI API Key not found in Settings.")
                     client = openai.AsyncOpenAI(api_key=api_key)
                     
-                    openai_msgs = [{"role": "system", "content": SYSTEM_PROMPT}]
+                    openai_msgs = [{"role": "system", "content": sys_prompt}]
                     user_msg = {"role": "user", "content": [{"type": "text", "text": user_content}]}
                     if images_b64:
                         for img in images_b64:
