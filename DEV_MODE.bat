@@ -7,7 +7,7 @@ echo   STARTING AIDERWEB ADVANCED (Developer Mode)
 echo ===================================================
 echo.
 
-if not exist "backend\venv" (
+if not exist "backend\venv\Scripts\python.exe" (
     echo [ERROR] Virtual environment not found!
     echo Please run INSTALL.bat first.
     pause
@@ -16,7 +16,7 @@ if not exist "backend\venv" (
 
 :: Start Backend
 echo [1/2] Starting Python Backend...
-start cmd /k "title AiderWeb Backend && cd backend && call venv\Scripts\activate.bat && uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+start cmd /k "title AiderWeb Backend && cd backend && "%CD%\venv\Scripts\python.exe" -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
 
 :: Start Frontend
 echo [2/2] Starting React Frontend...

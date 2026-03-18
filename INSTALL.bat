@@ -24,13 +24,12 @@ if not exist "backend\venv" (
 
 echo.
 echo [3/4] Installing Python dependencies...
-call backend\venv\Scripts\activate.bat
-py -m pip install --upgrade pip
-pip install -r backend\requirements.txt
+"%CD%\backend\venv\Scripts\python.exe" -m pip install --upgrade pip
+"%CD%\backend\venv\Scripts\python.exe" -m pip install -r backend\requirements.txt
 
 echo.
 echo [4/5] Installing Playwright Browsers (for AI Vision tools)...
-python -m playwright install chromium
+"%CD%\backend\venv\Scripts\python.exe" -m playwright install chromium
 
 echo.
 echo [5/5] Installing Frontend Dependencies...

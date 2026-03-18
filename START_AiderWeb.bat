@@ -7,7 +7,7 @@ echo   STARTING AIDERWEB ADVANCED (Production Mode)
 echo ===================================================
 echo.
 
-if not exist "backend\venv" (
+if not exist "backend\venv\Scripts\python.exe" (
     echo [ERROR] Virtual environment not found! 
     echo Please run INSTALL.bat first.
     pause
@@ -17,11 +17,8 @@ if not exist "backend\venv" (
 :: Enable Docker sandbox execution if desired (set to true to run AI commands in Docker)
 set USE_DOCKER_SANDBOX=false
 
-echo Activating Python environment...
-call backend\venv\Scripts\activate.bat
-
 echo Starting FastAPI Backend...
 cd backend
-python main.py
+"%CD%\venv\Scripts\python.exe" main.py
 
 pause
