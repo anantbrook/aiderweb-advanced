@@ -21,12 +21,12 @@ function fmt(text) {
   // Format diff blocks specially
   text = text.replace(/```diff\n([\s\S]*?)```/g, (_, c) => {
     const lines = c.split('\n').map(line => {
-        if (line.startsWith('+')) return `<div class="bg-green/10 text-green-400 px-1 border-l-2 border-green-500">${esc(line)}</div>`
-        if (line.startsWith('-')) return `<div class="bg-red/10 text-red-400 px-1 border-l-2 border-red-500">${esc(line)}</div>`
-        if (line.startsWith('@@')) return `<div class="text-blue-400 px-1">${esc(line)}</div>`
-        return `<div class="px-1 text-gray-300">${esc(line)}</div>`
+        if (line.startsWith('+')) return `<div class="bg-green-500/10 text-green-400 px-3 border-l-2 border-green-500/80">${esc(line)}</div>`
+        if (line.startsWith('-')) return `<div class="bg-red-500/10 text-red-400 px-3 border-l-2 border-red-500/80">${esc(line)}</div>`
+        if (line.startsWith('@@')) return `<div class="text-blue-400 px-3 py-1 bg-bg0/50 my-1 rounded">${esc(line)}</div>`
+        return `<div class="px-3 text-gray-400">${esc(line)}</div>`
     }).join('')
-    return `<div class="my-2 rounded-lg border border-border bg-bg0 overflow-hidden text-xs font-mono"><div class="bg-bg2 px-3 py-1 text-gray-400 border-b border-border flex justify-between"><span>Diff</span><span>📝</span></div><div class="p-2 overflow-x-auto">${lines}</div></div>`
+    return `<div class="my-3 rounded-xl border border-border/80 bg-bg1 overflow-hidden text-[13px] font-mono shadow-sm"><div class="bg-bg2/50 px-4 py-2 text-gray-400 border-b border-border/80 flex items-center gap-2"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="9" y1="15" x2="15" y2="15"></line></svg><span>Proposed Patch</span></div><div class="py-2 overflow-x-auto custom-scroll">${lines}</div></div>`
   })
 
   // Format EXECUTE blocks specially
@@ -43,7 +43,7 @@ function fmt(text) {
   })
   
   text = text.replace(/```(\w+)?\n?([\s\S]*?)```/g,
-    (_, l, c) => `<div class="my-2 rounded-lg border border-border bg-bg0 overflow-hidden text-xs"><div class="bg-bg2 px-3 py-1 text-gray-400 border-b border-border">${l || 'code'}</div><pre class="p-3 overflow-x-auto text-gray-300 font-mono"><code>${esc(c.trim())}</code></pre></div>`)
+    (_, l, c) => `<div class="my-3 rounded-xl border border-border/80 bg-bg1 overflow-hidden text-[13px] shadow-sm group"><div class="bg-bg2/50 px-4 py-2 text-gray-400 border-b border-border/80 flex justify-between items-center"><span class="font-mono text-xs uppercase tracking-wider">${l || 'code'}</span></div><pre class="p-4 overflow-x-auto text-gray-300 font-mono custom-scroll"><code>${esc(c.trim())}</code></pre></div>`)
   
   // Basic inline formatting
   text = text.replace(/`([^`\n]+)`/g, '<code class="bg-bg0 text-accent px-1.5 py-0.5 rounded font-mono text-[0.9em] border border-border/50">$1</code>')
@@ -81,12 +81,13 @@ function Message({ msg }) {
   const isUser = msg.role === 'user'
 
   return (
-    <div className={`flex gap-3 animate-in ${isUser ? 'flex-row-reverse' : ''}`}>
-      <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-sm flex-shrink-0 font-bold
-        ${isUser ? 'bg-accent/20 text-accent' : 'bg-bg2 border border-border text-green'}`}>
-        {isUser ? 'Y' : '⬡'}
-      </div>
-      <div className={`min-w-0 ${isUser ? 'max-w-[75%]' : 'flex-1'}`}>
+    <div className={`flex gap-4 animate-in ${isUser ? 'justify-end' : 'justify-start'}`}>
+      {!isUser && (
+          <div className={`w-8 h-8 mt-1 rounded-xl flex items-center justify-center text-sm flex-shrink-0 bg-gradient-to-br from-brand/20 to-brand/5 border border-brand/20 text-brand shadow-sm`}>
+            ⬡
+          </div>
+      )}
+      <div className={`min-w-0 ${isUser ? 'max-w-[85%] md:max-w-[75%]' : 'flex-1'}`}>
         {/* Agent events inside AI message */}
         {msg.events?.length > 0 && (
           <div className="bg-bg2/50 border border-border/50 rounded-lg p-3 mb-2 space-y-0.5">
@@ -96,10 +97,10 @@ function Message({ msg }) {
 
         {/* Main message content */}
         {msg.content && (
-          <div className={`rounded-xl px-4 py-3 text-sm leading-relaxed
+          <div className={`rounded-2xl px-5 py-4 text-[15px] leading-relaxed shadow-sm
             ${isUser
-              ? 'bg-accent/15 border border-accent/30 text-white'
-              : 'bg-bg1 border border-border text-gray-200 shadow-sm'
+              ? 'bg-bg2 border border-border/50 text-gray-100'
+              : 'bg-bg1 border border-border/40 text-gray-200'
             }`}
             dangerouslySetInnerHTML={{ __html: fmt(msg.content) }}
             style={{ wordBreak: 'break-word' }}
@@ -505,7 +506,8 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
     <div className="flex flex-col flex-1 overflow-hidden min-h-0">
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-5 space-y-5 min-h-0">
+      <div className="flex-1 overflow-y-auto p-4 md:p-8 space-y-6 min-h-0 bg-bg0 custom-scroll">
+         <div className="max-w-4xl mx-auto w-full space-y-8 pb-10">
 
         {messages.length === 0 ? (
           /* Welcome screen */
@@ -547,7 +549,8 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
           messages.map((msg, i) => <Message key={i} msg={{...msg, onApprove: approveDiffs, onReject: rejectDiffs}} />)
         )}
 
-        <div ref={bottomRef} />
+        </div>
+        <div ref={bottomRef} className="h-4" />
       </div>
 
       {/* Status bar when running */}
@@ -563,12 +566,13 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
       )}
 
       {/* Input area */}
-      <div className={`border-t border-border bg-bg1 p-3 relative ${isDragging ? 'bg-accent/10 border-accent' : ''}`}
+      <div className={`p-4 md:p-6 bg-bg0 relative flex flex-col justify-end min-h-0 ${isDragging ? 'bg-brand/10' : ''}`}
            onDrop={onDrop}
            onDragOver={onDragOver}
            onDragLeave={onDragLeave}
            onPaste={onPaste}
       >
+        <div className="max-w-4xl w-full mx-auto relative">
         {isDragging && (
             <div className="absolute inset-0 z-10 bg-accent/20 backdrop-blur-[1px] flex items-center justify-center rounded-xl pointer-events-none">
                 <span className="text-white font-bold bg-bg0 px-4 py-2 rounded-full border border-accent">Drop files to attach</span>
@@ -600,9 +604,8 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
           </div>
         )}
 
-        <div className="flex gap-2 items-end">
-          <div className={`flex-1 flex gap-2 bg-bg2 border rounded-xl px-3 py-2.5 transition-colors
-            ${running ? 'border-accent/30' : 'border-border focus-within:border-accent'}`}>
+        <div className="flex gap-2 items-end shadow-lg rounded-2xl bg-bg1 border border-border/60 p-1 focus-within:border-brand/50 transition-colors">
+          <div className={`flex-1 flex gap-2 px-3 py-2`}>
             <textarea
               ref={inputRef}
               value={input}
@@ -630,6 +633,7 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
             </button>
           </div>
 
+          </div>
           <button
             id="chat-send-btn"
             onClick={(e) => {
@@ -650,18 +654,20 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
                 }
             }}
             disabled={(!project && !running) || isDragging}
-            className={`w-10 h-10 rounded-xl flex items-center justify-center text-sm font-bold transition-all flex-shrink-0
+            className={`w-10 h-10 mb-0.5 mr-0.5 rounded-xl flex items-center justify-center text-sm font-bold transition-all flex-shrink-0
               ${running
-                ? 'bg-red/20 border border-red/50 text-red hover:bg-red hover:text-white'
-                : 'bg-accent hover:bg-accent/80 text-white disabled:bg-bg3 disabled:text-gray-600 disabled:cursor-not-allowed'
+                ? 'bg-red-500/20 text-red-500 hover:bg-red-500 hover:text-white'
+                : 'bg-brand hover:bg-brand/90 text-bg0 shadow-sm disabled:bg-bg3 disabled:text-gray-600 disabled:cursor-not-allowed'
               }`}
           >
-            {running ? '■' : '▲'}
+            {running ? '■' : (
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg>
+            )}
           </button>
         </div>
 
-        <div className="flex items-center justify-between mt-2 px-1">
-          <div className="flex items-center gap-2 text-xs text-gray-600 flex-wrap">
+        <div className="flex items-center justify-between mt-3 px-2">
+          <div className="flex items-center gap-2 text-xs text-gray-500 flex-wrap font-medium">
             <span className="hidden sm:inline">⬡ Reads entire project automatically</span>
             {project && <span className="hidden sm:inline">· {project.path.split(/[\\/]/).pop()}</span>}
             <button onClick={() => setShowTestCmd(!showTestCmd)} className={`px-2 py-0.5 rounded border transition-colors ${showTestCmd || testCmd ? 'bg-accent/20 border-accent/50 text-accent' : 'border-border hover:text-gray-400'}`}>

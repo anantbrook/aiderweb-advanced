@@ -192,22 +192,22 @@ export default function App() {
         <button className="md:hidden ml-auto text-gray-400" onClick={() => setMobileMenu(m => !m)}>☰</button>
 
         {/* Right-side controls */}
-        <div className={`flex items-center gap-1.5 flex-shrink-0 ${mobileMenu ? 'absolute top-10 left-0 right-0 bg-bg1 border-b border-border p-3 flex-wrap shadow-lg z-50' : 'hidden md:flex'}`}>
+        <div className={`flex items-center gap-2 flex-shrink-0 ${mobileMenu ? 'absolute top-10 left-0 right-0 bg-bg1 border-b border-border p-3 flex-wrap shadow-lg z-50' : 'hidden md:flex'}`}>
 
           {/* File count + type badge */}
           {projectStats && (
-            <div className="hidden md:flex items-center gap-1 text-xs text-gray-500 bg-bg2 border border-border px-2 py-1 rounded">
+            <div className="hidden md:flex items-center gap-1 text-[11px] font-medium text-gray-500 bg-bg2 border border-border/50 px-2 py-0.5 rounded-full">
               <span>📋 {projectStats.count}</span>
               <span className="text-gray-700">·</span>
-              <span className="text-accent">{projectStats.type}</span>
+              <span className="text-gray-400">{projectStats.type}</span>
             </div>
           )}
 
           {/* Git branch */}
           {gitData?.branch && (
             <button onClick={() => setShowGit(g => !g)}
-              className={`flex items-center gap-1 text-xs px-2 py-1 rounded border transition-all
-                ${showGit ? 'bg-accent/20 border-accent/50 text-accent' : 'border-border text-gray-400 hover:text-white'}`}>
+              className={`flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded-full border transition-all
+                ${showGit ? 'bg-brand/10 border-brand/30 text-brand' : 'border-border/50 bg-bg2 text-gray-400 hover:text-white'}`}>
               ⎇ {gitData.branch}
               {(gitData.status || '').trim() && <span className="w-1.5 h-1.5 rounded-full bg-yellow" />}
             </button>
@@ -222,17 +222,18 @@ export default function App() {
 
           {/* Model selector — cloud models first, local models last with warning */}
           <select value={model} onChange={e => setModel(e.target.value)}
-            className="hidden sm:block bg-bg2 border border-border text-white text-xs px-2 py-1 rounded outline-none cursor-pointer max-w-[210px] truncate">
+            className="hidden sm:block bg-bg1 hover:bg-bg2 border border-border text-gray-300 hover:text-white text-xs px-2 py-1 rounded-lg outline-none cursor-pointer max-w-[210px] truncate transition-colors appearance-none pr-6 font-medium relative"
+            style={{ backgroundImage: `url('data:image/svg+xml;utf8,<svg fill="%23888" height="16" viewBox="0 0 24 24" width="16" xmlns="http://www.w3.org/2000/svg"><path d="M7 10l5 5 5-5z"/></svg>')`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 4px center' }}>
             {cloudModels.length > 0 ? (
               <optgroup label="☁️ Massive Cloud Models">
-                {cloudModels.map(m => <option key={m} value={`ollama/${m}`}>🚀 {m}</option>)}
+                {cloudModels.map(m => <option key={m} value={`ollama/${m}`}>✨ {m}</option>)}
               </optgroup>
             ) : (
               <optgroup label="☁️ Massive Cloud Models">
-                <option value="ollama/deepseek-coder-v2:236b">🚀 deepseek-coder-v2:236b</option>
-                <option value="ollama/qwen2.5-coder:32b">🚀 qwen2.5-coder:32b</option>
-                <option value="ollama/gpt-4o-proxy">🚀 gpt-4o-proxy</option>
-                <option value="ollama/claude-3.5-sonnet-proxy">🚀 claude-3.5-sonnet-proxy</option>
+                <option value="ollama/deepseek-coder-v2:236b">✨ deepseek-coder-v2:236b</option>
+                <option value="ollama/qwen2.5-coder:32b">✨ qwen2.5-coder:32b</option>
+                <option value="ollama/gpt-4o-proxy">✨ gpt-4o-proxy</option>
+                <option value="ollama/claude-3.5-sonnet-proxy">✨ claude-3.5-sonnet-proxy</option>
               </optgroup>
             )}
             {localModels.length > 0 && (
@@ -249,37 +250,39 @@ export default function App() {
             </span>
           )}
 
-          <button onClick={() => setShowFiles(f => !f)}
-            className="hidden md:block text-xs px-2 py-1 border border-border text-gray-400 hover:text-white rounded transition-all">
-            {showFiles ? '◀' : '▶'} Files
-          </button>
-
-          <button onClick={() => setShowTerminal(t => !t)}
-            className="hidden md:block text-xs px-2 py-1 border border-border text-gray-400 hover:text-white rounded transition-all">
-            {showTerminal ? '▼' : '▲'} Term
-          </button>
-          
-          <button onClick={() => setShowDiff(d => !d)}
-            className={`hidden md:block text-xs px-2 py-1 border transition-all rounded ${showDiff ? 'bg-accent/20 border-accent/50 text-accent' : 'border-border text-gray-400 hover:text-white'}`}>
-            Diff
-          </button>
+          <div className="hidden md:flex bg-bg2 rounded-lg p-0.5 border border-border/50 shadow-sm ml-1 gap-0.5">
+              <button onClick={() => setShowFiles(f => !f)}
+                className={`text-[11px] px-2 py-1 font-medium rounded transition-all ${showFiles ? 'bg-bg3 text-white shadow-sm' : 'text-gray-400 hover:text-gray-200'}`}>
+                Files
+              </button>
+    
+              <button onClick={() => setShowTerminal(t => !t)}
+                className={`text-[11px] px-2 py-1 font-medium rounded transition-all ${showTerminal ? 'bg-bg3 text-white shadow-sm' : 'text-gray-400 hover:text-gray-200'}`}>
+                Term
+              </button>
+              
+              <button onClick={() => setShowDiff(d => !d)}
+                className={`text-[11px] px-2 py-1 font-medium rounded transition-all ${showDiff ? 'bg-bg3 text-brand shadow-sm' : 'text-gray-400 hover:text-gray-200'}`}>
+                Diff
+              </button>
+          </div>
 
           <button onClick={() => setShowSettings(true)}
-            className="w-7 h-7 flex items-center justify-center border border-border text-gray-400 hover:text-white hover:bg-bg3 rounded transition-all">
-            ⚙
+            className="w-7 h-7 flex items-center justify-center text-gray-400 hover:text-white transition-all ml-1">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 15a3 3 0 100-6 3 3 0 000 6z"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
           </button>
         </div>
       </div>
 
       {/* ── MAIN LAYOUT ────────────────────────── */}
-      <div className="flex flex-1 overflow-hidden min-h-0">
+      <div className="flex flex-1 overflow-hidden min-h-0 bg-bg0">
 
         {showFiles && (
           <>
-            <div className={`flex flex-col bg-bg1 border-r border-border flex-shrink-0 ${mobileMenu ? 'absolute inset-y-0 left-0 z-40 shadow-2xl' : ''}`}
+            <div className={`flex flex-col bg-bg0 border-r border-border/40 flex-shrink-0 ${mobileMenu ? 'absolute inset-y-0 left-0 z-40 shadow-2xl' : ''}`}
               style={{ width: mobileMenu ? '80%' : sidebarW }}>
-              <div className="flex items-center justify-between px-3 py-2 border-b border-border flex-shrink-0">
-                <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider truncate">
+              <div className="flex items-center justify-between px-3 py-2.5 flex-shrink-0 bg-bg0">
+                <span className="text-[11px] font-bold text-gray-500 uppercase tracking-widest truncate">
                   {project?.name || 'Explorer'}
                 </span>
               </div>

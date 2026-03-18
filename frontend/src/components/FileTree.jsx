@@ -90,16 +90,16 @@ function Node({ item, depth, root, selectedFiles, setSelectedFiles }) {
         onClick={handleView}
         onContextMenu={e => { e.preventDefault(); setContextMenu(true) }}
         onMouseLeave={() => setContextMenu(false)}
-        className={`relative flex items-center gap-1.5 py-0.5 text-xs rounded transition-colors cursor-pointer group
-          ${isSelected ? 'bg-accent/20 text-accent' : item.isDir ? 'text-gray-300 hover:text-white hover:bg-bg3' : 'text-gray-400 hover:text-white hover:bg-bg3'}`}
-        style={{ paddingLeft: `${8 + depth * 12}px` }}
+        className={`relative flex items-center gap-2 py-1 text-[13px] transition-colors cursor-pointer group font-mono
+          ${isSelected ? 'bg-brand/10 text-brand' : item.isDir ? 'text-gray-300 hover:bg-bg2' : 'text-gray-400 hover:bg-bg2 hover:text-gray-200'}`}
+        style={{ paddingLeft: `${12 + depth * 16}px` }}
       >
-        <span className="text-sm flex-shrink-0">{icon}</span>
-        <span className="truncate flex-1">{item.name}</span>
+        <span className="text-sm flex-shrink-0 opacity-80">{icon}</span>
+        <span className="truncate flex-1 tracking-tight">{item.name}</span>
         {!item.isDir && (
-            <div onClick={handleSelect} className={`w-4 h-4 rounded border mr-2 flex items-center justify-center transition-colors
-                ${isSelected ? 'border-accent bg-accent text-bg0' : 'border-border group-hover:border-gray-500'}`} title="Include in AI context">
-                {isSelected && '✓'}
+            <div onClick={handleSelect} className={`w-3.5 h-3.5 rounded-sm border mr-3 flex items-center justify-center transition-colors
+                ${isSelected ? 'border-brand bg-brand text-bg0' : 'border-border group-hover:border-gray-500'}`} title="Include in AI context">
+                {isSelected && <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>}
             </div>
         )}
         
@@ -145,8 +145,8 @@ export default function FileTree({ root, selectedFiles, setSelectedFiles }) {
 
   return (
     <div className="py-1">
-      <div className="flex items-center justify-between px-2 py-1 mb-1">
-        <span className="text-xs text-gray-600 italic">Select files for context</span>
+      <div className="flex items-center justify-between px-3 py-1 mb-1">
+        <span className="text-[11px] font-medium text-gray-500">CONTEXT SELECTION</span>
         <div className="flex items-center gap-1">
            <button onClick={() => {
                const newName = prompt('New file name (e.g. src/utils.js):')
