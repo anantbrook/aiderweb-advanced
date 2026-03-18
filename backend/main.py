@@ -158,6 +158,21 @@ async def git_status(path: str):
 # ── Models ─────────────────────────────────────
 mdl = APIRouter(prefix="/api/models")
 
+CLOUD_MODELS = [
+    "deepseek-coder-v2:236b",
+    "deepseek-v3.1:671b-cloud",
+    "qwen2.5-coder:32b",
+    "qwen2.5:72b",
+    "llama3.1:405b",
+    "llama3.1:70b",
+    "mixtral:8x22b",
+    "command-r-plus:104b",
+    "gemma2:27b",
+    "phi3.5:14b",
+    "gpt-4o-proxy",
+    "claude-3.5-sonnet-proxy"
+]
+
 @mdl.get("")
 async def get_models():
     """Return all installed models split into cloud vs local."""
@@ -165,18 +180,21 @@ async def get_models():
         with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=3) as r:
             data   = json.loads(r.read())
             all_m  = [m["name"] for m in data.get("models", [])]
-            cloud  = [m for m in all_m if "cloud" in m]
-            local  = [m for m in all_m if "cloud" not in m]
-            return {"models": cloud + local, "cloud": cloud, "local": local, "online": True}
+            
+            # If the user has pulled standard cloud models, we identify them
+            # We'll just define 'cloud' as either massive models, proxy models, or explicitly named 'cloud'
+            local = []
+            cloud_found = list(CLOUD_MODELS) # Always show our predefined cloud models
+            for m in all_m:
+                if m not in cloud_found and ("cloud" not in m and "proxy" not in m):
+                    local.append(m)
+                elif m not in cloud_found:
+                    cloud_found.append(m)
+                    
+            return {"models": cloud_found + local, "cloud": cloud_found, "local": local, "online": True}
     except:
         # Ollama offline — return known cloud model names so UI still works
-        cloud_fallback = [
-            "qwen3-coder:480b-cloud",
-            "deepseek-v3.1:671b-cloud",
-            "gpt-oss:120b-cloud",
-            "qwen3-coder:32b-cloud",
-        ]
-        return {"models": cloud_fallback, "cloud": cloud_fallback, "local": [], "online": False}
+        return {"models": CLOUD_MODELS, "cloud": CLOUD_MODELS, "local": [], "online": False}
 
 @mdl.delete("/local")
 async def delete_local_models():

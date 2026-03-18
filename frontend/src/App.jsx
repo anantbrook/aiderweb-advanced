@@ -12,7 +12,7 @@ export default function App() {
   const [cloudModels, setCloudModels]   = useState([])
   const [selectedFiles, setSelectedFiles] = useState([]) // For explicitly included context
   const [localModels, setLocalModels]   = useState([])
-  const [model, setModel]               = useState('ollama/qwen3-coder:480b-cloud')
+  const [model, setModel]               = useState('ollama/deepseek-coder-v2:236b')
   const [ollamaOnline, setOllamaOnline] = useState(false)
   const [showTerminal, setShowTerminal] = useState(true)
   const [showFiles, setShowFiles]       = useState(true)
@@ -166,20 +166,22 @@ export default function App() {
 
           {/* Model selector — cloud models first, local models last with warning */}
           <select value={model} onChange={e => setModel(e.target.value)}
-            className="hidden sm:block bg-bg2 border border-border text-white text-xs px-2 py-1 rounded outline-none cursor-pointer max-w-[190px]">
+            className="hidden sm:block bg-bg2 border border-border text-white text-xs px-2 py-1 rounded outline-none cursor-pointer max-w-[210px] truncate">
             {cloudModels.length > 0 ? (
-              <optgroup label="☁ Cloud (no storage)">
-                {cloudModels.map(m => <option key={m} value={`ollama/${m}`}>⭐ {m}</option>)}
+              <optgroup label="☁️ Massive Cloud Models">
+                {cloudModels.map(m => <option key={m} value={`ollama/${m}`}>🚀 {m}</option>)}
               </optgroup>
             ) : (
-              <>
-                <option value="ollama/qwen3-coder:480b-cloud">⭐ qwen3-coder:480b-cloud</option>
-                <option value="ollama/deepseek-v3.1:671b-cloud">⭐ deepseek-v3.1:671b-cloud</option>
-              </>
+              <optgroup label="☁️ Massive Cloud Models">
+                <option value="ollama/deepseek-coder-v2:236b">🚀 deepseek-coder-v2:236b</option>
+                <option value="ollama/qwen2.5-coder:32b">🚀 qwen2.5-coder:32b</option>
+                <option value="ollama/gpt-4o-proxy">🚀 gpt-4o-proxy</option>
+                <option value="ollama/claude-3.5-sonnet-proxy">🚀 claude-3.5-sonnet-proxy</option>
+              </optgroup>
             )}
             {localModels.length > 0 && (
-              <optgroup label="⚠ Local (delete in Settings)">
-                {localModels.map(m => <option key={m} value={`ollama/${m}`}>⚠ {m}</option>)}
+              <optgroup label="💻 Local Downloaded Models">
+                {localModels.map(m => <option key={m} value={`ollama/${m}`}>💻 {m}</option>)}
               </optgroup>
             )}
           </select>
@@ -187,7 +189,7 @@ export default function App() {
           {/* Warn badge when a local model is selected */}
           {isLocal && (
             <span className="hidden md:inline text-xs text-yellow bg-yellow/10 border border-yellow/30 px-2 py-1 rounded">
-              ⚠ Local
+              Local Hardware
             </span>
           )}
 
