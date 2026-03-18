@@ -1,40 +1,40 @@
 @echo off
-title AiderWeb Installer
-color 0B
-cls
+color 0b
+title AiderWeb Advanced Installer
 
-set "APP=%~dp0"
-
-echo.
-echo  ============================================
-echo    AIDERWEB INSTALLER
-echo  ============================================
+echo ===================================================
+echo   AIDERWEB ADVANCED - INSTALLER (With Codex Tools)
+echo ===================================================
 echo.
 
-where node   >nul 2>&1 || (echo [ERROR] Node.js not found & pause & exit /b 1)
-where python >nul 2>&1 || (echo [ERROR] Python not found  & pause & exit /b 1)
-for /f %%v in ('node --version')   do echo [OK] Node %%v
-for /f %%v in ('python --version') do echo [OK] %%v
-echo.
+echo [1/4] Checking Python installation...
+python --version >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [ERROR] Python is not installed or not in PATH!
+    echo Please install Python 3.10+ from python.org and check "Add to PATH".
+    pause
+    goto :eof
+)
 
-echo [1/3] Installing Python backend...
-cd /d "%APP%backend"
-py -3.12 -m pip install fastapi "uvicorn[standard]" websockets pydantic aider-chat --quiet
-echo [OK] Backend ready
 echo.
+echo [2/4] Creating virtual environment...
+if not exist "backend\venv" (
+    py -m venv backend\venv
+)
 
-echo [2/3] Installing frontend...
-cd /d "%APP%frontend"
-call npm install --silent
-echo [OK] Frontend installed
 echo.
+echo [3/4] Installing Python dependencies...
+call backend\venv\Scripts\activate.bat
+pip install --upgrade pip
+pip install -r backend\requirements.txt
 
-echo [3/3] Building frontend...
-call npm run build
-echo [OK] Frontend built
 echo.
+echo [4/4] Installing Playwright Browsers (for AI Vision tools)...
+playwright install chromium
 
-echo  ============================================
-echo  DONE! Run START_AiderWeb.bat to launch.
-echo  ============================================
+echo.
+echo ===================================================
+echo   INSTALLATION COMPLETE!
+echo ===================================================
+echo You can now run START_AiderWeb.bat to launch the app.
 pause

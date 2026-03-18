@@ -1,15 +1,34 @@
 @echo off
-title AiderWeb DEV
-set "APP=%~dp0"
-ollama list >nul 2>&1 || (start /min "" ollama serve & timeout /t 3 /nobreak >nul)
-start "Backend"  cmd /k "cd /d "%APP%backend"  && py -3.12 main.py"
-start "Frontend" cmd /k "cd /d "%APP%frontend" && npm run dev"
-timeout /t 3 /nobreak >nul
-start http://localhost:5173
+color 0e
+title AiderWeb Advanced (Developer Mode)
+
+echo ===================================================
+echo   STARTING AIDERWEB ADVANCED (Developer Mode)
+echo ===================================================
 echo.
-echo  DEV mode:  http://localhost:5173  (hot reload)
-echo  Backend:   http://localhost:8000
+
+if not exist "backend\venv" (
+    echo [ERROR] Virtual environment not found!
+    echo Please run INSTALL.bat first.
+    pause
+    goto :eof
+)
+
+:: Start Backend
+echo [1/2] Starting Python Backend...
+start cmd /k "title AiderWeb Backend && cd backend && call venv\Scripts\activate.bat && uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+
+:: Start Frontend
+echo [2/2] Starting React Frontend...
+cd frontend
+if not exist "node_modules" (
+    echo Installing npm dependencies...
+    call npm install
+)
+start cmd /k "title AiderWeb Frontend && npm run dev"
+
 echo.
+echo Developer mode started!
+echo Backend: http://localhost:8000
+echo Frontend: http://localhost:5173
 pause
-taskkill /fi "WindowTitle eq Backend"  /f >nul 2>&1
-taskkill /fi "WindowTitle eq Frontend" /f >nul 2>&1
