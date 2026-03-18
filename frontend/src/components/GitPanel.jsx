@@ -37,15 +37,50 @@ export default function GitPanel({ data }) {
           setWorking(false)
       }
   }
+  
+  const handlePR = async () => {
+      const title = prompt("PR Title:")
+      if (!title) return
+      setWorking(true)
+      try {
+          const r = await fetch(`/api/git/pr?path=${encodeURIComponent(data.path || '.')}&title=${encodeURIComponent(title)}&description=${encodeURIComponent("Auto-generated PR from AiderWeb")}`, { method: 'POST' })
+          const d = await r.json()
+          if (d.ok) alert('PR Created successfully!\\n' + d.url)
+          else alert('PR failed: ' + d.error)
+      } finally {
+          setWorking(false)
+      }
+  }
+  
+  const handleNewBranch = async () => {
+      const bname = prompt("New branch name:")
+      if (!bname) return
+      setWorking(true)
+      try {
+          const r = await fetch(`/api/git/branch`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({path: data.path || '.', branch: bname})
+          })
+          const d = await r.json()
+          if (!d.ok) alert('Branch failed: ' + d.error)
+          else window.dispatchEvent(new CustomEvent('refresh_git')) // assuming parent triggers it
+      } finally {
+          setWorking(false)
+      }
+  }
 
   return (
     <div className="border-t border-border bg-bg0 max-h-[300px] overflow-y-auto flex-shrink-0 flex flex-col">
       <div className="px-3 py-1.5 border-b border-border flex items-center justify-between">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 group cursor-pointer" onClick={handleNewBranch} title="Click to create new branch">
            <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Git</span>
-           {data.branch && <span className="text-xs text-accent bg-accent/10 px-1.5 py-0.5 rounded">⎇ {data.branch}</span>}
+           {data.branch && <span className="text-xs text-accent bg-accent/10 px-1.5 py-0.5 rounded group-hover:bg-accent/20">⎇ {data.branch}</span>}
         </div>
-        <button disabled={working} onClick={handlePush} className="text-[10px] bg-bg2 border border-border px-1.5 py-0.5 rounded hover:bg-bg3 hover:text-white disabled:opacity-50">Push</button>
+        <div className="flex gap-1">
+            <button disabled={working} onClick={handlePR} className="text-[10px] bg-bg2 border border-border px-1.5 py-0.5 rounded hover:bg-bg3 hover:text-white disabled:opacity-50" title="Create Pull Request">PR</button>
+            <button disabled={working} onClick={handlePush} className="text-[10px] bg-bg2 border border-border px-1.5 py-0.5 rounded hover:bg-bg3 hover:text-white disabled:opacity-50" title="Push Branch">Push</button>
+        </div>
       </div>
       <div className="flex-1 overflow-y-auto min-h-0">
       {statusLines.length > 0 && (

@@ -38,6 +38,31 @@ DEFAULT_MODEL  = "ollama/qwen3-coder:480b-cloud"
 SKIP = {'node_modules', '__pycache__', '.git', '.next', 'dist', 'build', '.venv', 'venv', '.cache'}
 
 
+# ── Skills & Plugins Engine ─────────────────────
+import importlib.util
+import inspect
+
+PLUGINS_DIR = Path(__file__).parent / "plugins"
+PLUGINS_DIR.mkdir(exist_ok=True)
+
+def load_plugins():
+    """Load all .py files in plugins/ and return a dict of {name: function, doc: docstring}."""
+    plugins = {}
+    for py_file in PLUGINS_DIR.glob("*.py"):
+        if py_file.name.startswith("__"): continue
+        try:
+            spec = importlib.util.spec_from_file_location(py_file.stem, str(py_file))
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            for name, func in inspect.getmembers(module, inspect.isfunction):
+                if not name.startswith("_"):
+                    sig = str(inspect.signature(func))
+                    doc = inspect.getdoc(func) or "No description provided."
+                    plugins[name] = {"func": func, "doc": f"{name}{sig}:\n  {doc}"}
+        except Exception as e:
+            print(f"[Plugin Error] Could not load {py_file.name}: {e}")
+    return plugins
+
 # ── Helpers ────────────────────────────────────
 def get_ip():
     try:
@@ -327,6 +352,66 @@ async def git_commit(body: GitCommitBody):
         run_cmd(["git", "add", "."], cwd=body.path)
         out = run_cmd(["git", "commit", "-m", body.message], cwd=body.path)
         return {"ok": True, "output": out}
+    except Exception as e:
+        return {"error": str(e)}
+
+class GitBranchBody(BaseModel):
+    path: str
+    branch: str
+
+@git.post("/branch")
+async def git_branch(body: GitBranchBody):
+    try:
+        run_cmd(["git", "checkout", "-b", body.branch], cwd=body.path)
+        return {"ok": True}
+    except Exception as e:
+        return {"error": str(e)}
+
+@git.post("/pr")
+async def git_pr(path: str, title: str, description: str):
+    """Creates a PR using the GitHub REST API and the token from settings."""
+    try:
+        settings = {}
+        if SETTINGS_FILE.exists():
+            try: settings = json.loads(SETTINGS_FILE.read_text())
+            except: pass
+            
+        token = settings.get("github_token")
+        if not token:
+            return {"error": "GitHub token not configured in Settings."}
+            
+        # Push branch first
+        branch = run_cmd(["git", "branch", "--show-current"], cwd=path)
+        run_cmd(["git", "push", "-u", "origin", branch], cwd=path)
+        
+        # Get remote URL to parse owner/repo
+        remote = run_cmd(["git", "config", "--get", "remote.origin.url"], cwd=path)
+        # Hacky parse of github URL format
+        import re
+        m = re.search(r'github\.com[:/]([^/]+)/([^.]+)', remote)
+        if not m:
+            return {"error": "Could not parse GitHub repo from remote origin."}
+            
+        owner, repo = m.group(1), m.group(2)
+        
+        # Get default branch for the target (assumed main)
+        data = json.dumps({
+            "title": title,
+            "body": description,
+            "head": branch,
+            "base": "main"
+        }).encode("utf-8")
+        
+        import urllib.request as req
+        request = req.Request(f"https://api.github.com/repos/{owner}/{repo}/pulls", data=data, headers={
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github.v3+json",
+        }, method="POST")
+        
+        with req.urlopen(request) as response:
+            resp_data = json.loads(response.read().decode())
+            return {"ok": True, "url": resp_data.get("html_url")}
+            
     except Exception as e:
         return {"error": str(e)}
 
@@ -808,7 +893,15 @@ async def agent_ws(ws: WebSocket):
                 try: settings = json.loads(SETTINGS_FILE.read_text())
                 except: pass
             
-            sys_prompt = settings.get("system_prompt", DEFAULT_SYSTEM_PROMPT)
+            mode = msg.get("mode", "coder")
+            
+            if mode == "planner":
+                sys_prompt = PLANNER_SYSTEM_PROMPT
+            elif mode == "reviewer":
+                sys_prompt = REVIEWER_SYSTEM_PROMPT
+            else:
+                sys_prompt = settings.get("system_prompt", DEFAULT_SYSTEM_PROMPT)
+                
             if project_memory:
                 sys_prompt += "\n\n# MEMORY (Learned facts from previous sessions):\n"
                 for i, mem in enumerate(project_memory):

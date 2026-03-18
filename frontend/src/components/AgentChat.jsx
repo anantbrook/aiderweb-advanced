@@ -170,6 +170,7 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
   const [statusText, setStatusText] = useState('')
   const [testCmd, setTestCmd] = useState('') // added for agent loop
   const [recording, setRecording] = useState(false)
+  const [agentMode, setAgentMode] = useState('coder') // 'coder', 'planner', 'reviewer'
   const [showTestCmd, setShowTestCmd] = useState(false)
   const [droppedFiles, setDroppedFiles] = useState([]) // For drag and drop uploads
   const [isDragging, setIsDragging] = useState(false)
@@ -363,6 +364,7 @@ export default function AgentChat({ project, model, ollamaOnline, selectedFiles,
       model,
       message: text,
       selected_files: selectedFiles,
+      mode: agentMode,
       test_cmd: testCmd, // pass to backend to run on success
       extra_files: droppedFiles.map(f => ({ name: f.name, content: f.content, type: f.type }))
     }))

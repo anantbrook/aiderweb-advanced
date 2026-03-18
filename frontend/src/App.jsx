@@ -82,9 +82,16 @@ export default function App() {
   // Load git + stats whenever the active project changes
   useEffect(() => {
     if (!project) { setGitData(null); setProjectStats(null); setSelectedFiles([]); return }
-    fetch(`/api/git/status?path=${encodeURIComponent(project.path)}`).then(r => r.json()).then(setGitData).catch(() => {})
-    fetch(`/api/scan?path=${encodeURIComponent(project.path)}`).then(r => r.json()).then(setProjectStats).catch(() => {})
+    
+    const loadGit = () => fetch(`/api/git/status?path=${encodeURIComponent(project.path)}`).then(r => r.json()).then(setGitData).catch(() => {})
+    const loadScan = () => fetch(`/api/scan?path=${encodeURIComponent(project.path)}`).then(r => r.json()).then(setProjectStats).catch(() => {})
+    
+    loadGit()
+    loadScan()
     setSelectedFiles([]) // Reset context on project switch
+    
+    window.addEventListener('refresh_git', loadGit)
+    return () => window.removeEventListener('refresh_git', loadGit)
   }, [project?.path])
 
   const [showShortcuts, setShowShortcuts] = useState(false)

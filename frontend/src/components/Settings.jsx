@@ -8,6 +8,7 @@ export default function Settings({ model, localModels, onModelChange, onClose, o
   const [anthropicKey, setAnthropicKey] = useState('')
   const [groqKey, setGroqKey]       = useState('')
   const [julesKey, setJulesKey]     = useState('')
+  const [githubToken, setGithubToken] = useState('')
   const [deleting,   setDeleting]   = useState(false)
   const [deleteMsg,  setDeleteMsg]  = useState('')
 
@@ -20,6 +21,7 @@ export default function Settings({ model, localModels, onModelChange, onClose, o
         setAnthropicKey(d.anthropic_key || '')
         setGroqKey(d.groq_key || '')
         setJulesKey(d.jules_key || '')
+        setGithubToken(d.github_token || '')
     }).catch(() => {})
   }, [])
 
@@ -31,7 +33,8 @@ export default function Settings({ model, localModels, onModelChange, onClose, o
        openai_key: openaiKey,
        anthropic_key: anthropicKey,
        groq_key: groqKey,
-       jules_key: julesKey
+       jules_key: julesKey,
+       github_token: githubToken
     }
     fetch('/api/projects/settings', {
         method: 'POST',
