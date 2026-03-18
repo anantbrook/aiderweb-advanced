@@ -17,12 +17,40 @@ const EVENT_ICONS = {
 // Format markdown-ish text
 function fmt(text) {
   if (!text) return ''
+  
+  // Format diff blocks specially
+  text = text.replace(/```diff\n([\s\S]*?)```/g, (_, c) => {
+    const lines = c.split('\n').map(line => {
+        if (line.startsWith('+')) return `<div class="bg-green/10 text-green-400 px-1 border-l-2 border-green-500">${esc(line)}</div>`
+        if (line.startsWith('-')) return `<div class="bg-red/10 text-red-400 px-1 border-l-2 border-red-500">${esc(line)}</div>`
+        if (line.startsWith('@@')) return `<div class="text-blue-400 px-1">${esc(line)}</div>`
+        return `<div class="px-1 text-gray-300">${esc(line)}</div>`
+    }).join('')
+    return `<div class="my-2 rounded-lg border border-border bg-bg0 overflow-hidden text-xs font-mono"><div class="bg-bg2 px-3 py-1 text-gray-400 border-b border-border flex justify-between"><span>Diff</span><span>📝</span></div><div class="p-2 overflow-x-auto">${lines}</div></div>`
+  })
+
+  // Format EXECUTE blocks specially
+  text = text.replace(/<<<EXECUTE\n([\s\S]*?)\n>>>/g, (_, c) => {
+      return `<div class="my-2 rounded-lg border border-yellow/30 bg-yellow/5 overflow-hidden text-xs font-mono"><div class="bg-yellow/10 px-3 py-1 text-yellow-500 border-b border-yellow/20 flex items-center gap-2"><span>⚡</span><span>Executing Terminal Command</span></div><div class="p-3 text-gray-300 overflow-x-auto">${esc(c.trim())}</div></div>`
+  })
+  
   text = text.replace(/```(\w+)?\n?([\s\S]*?)```/g,
-    (_, l, c) => `<pre><code>${esc(c.trim())}</code></pre>`)
-  text = text.replace(/`([^`]+)`/g, '<code>$1</code>')
-  text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-  text = text.replace(/\n/g, '<br>')
-  return text
+    (_, l, c) => `<div class="my-2 rounded-lg border border-border bg-bg0 overflow-hidden text-xs"><div class="bg-bg2 px-3 py-1 text-gray-400 border-b border-border">${l || 'code'}</div><pre class="p-3 overflow-x-auto text-gray-300 font-mono"><code>${esc(c.trim())}</code></pre></div>`)
+  
+  // Basic inline formatting
+  text = text.replace(/`([^`\n]+)`/g, '<code class="bg-bg0 text-accent px-1.5 py-0.5 rounded font-mono text-[0.9em] border border-border/50">$1</code>')
+  text = text.replace(/\*\*([^*\n]+)\*\*/g, '<strong class="text-white font-semibold">$1</strong>')
+  
+  // Only convert single newlines to br if not inside a pre/code block (very simplified)
+  // text = text.replace(/\n/g, '<br>')
+  
+  // split by blocks we just created
+  const parts = text.split(/(<div class="my-2 rounded-lg.*?<\/div><\/div>)/s)
+  return parts.map(p => {
+      if (p.startsWith('<div class="my-2')) return p
+      // handle normal text newlines
+      return p.replace(/\n/g, '<br>')
+  }).join('')
 }
 
 function esc(s) {
@@ -63,9 +91,10 @@ function Message({ msg }) {
           <div className={`rounded-xl px-4 py-3 text-sm leading-relaxed
             ${isUser
               ? 'bg-accent/15 border border-accent/30 text-white'
-              : 'bg-bg2 border border-border text-gray-200'
+              : 'bg-bg1 border border-border text-gray-200 shadow-sm'
             }`}
             dangerouslySetInnerHTML={{ __html: fmt(msg.content) }}
+            style={{ wordBreak: 'break-word' }}
           />
         )}
 
