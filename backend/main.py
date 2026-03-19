@@ -361,6 +361,94 @@ if CHROMA_AVAILABLE:
 else:
     chroma_client = None
 
+
+@proj.get("")
+async def list_projects():
+    try:
+        import sqlite3
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT path, name, last_opened FROM projects ORDER BY last_opened DESC")
+        rows = [{"path": r[0], "name": r[1], "last_opened": r[2]} for r in c.fetchall()]
+        conn.close()
+        
+        # Legacy fallback migration
+        if not rows and SETTINGS_FILE.parent.joinpath("projects.json").exists():
+            import json
+            legacy = json.loads(SETTINGS_FILE.parent.joinpath("projects.json").read_text())
+            for p in legacy:
+                save_project(p["path"])
+            return legacy
+        return rows
+    except Exception as e:
+        return []
+
+from typing import List, Dict, Any
+@proj.post("")
+async def save_project(body: List[Dict[str, Any]]):
+    try:
+        import time, sqlite3
+        from pathlib import Path
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("DELETE FROM projects")
+        for item in body:
+            if "path" not in item: continue
+            path = item["path"]
+            name = item.get("name", Path(path).name)
+            last_opened = item.get("last_opened", int(time.time()))
+            c.execute("REPLACE INTO projects (path, name, last_opened) VALUES (?, ?, ?)", (path, name, last_opened))
+        conn.commit()
+        conn.close()
+        return {"ok": True}
+    except Exception as e:
+        return {"error": str(e)}
+
+@proj.delete("")
+async def delete_project(path: str):
+    try:
+        import sqlite3
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("DELETE FROM projects WHERE path=?", (path,))
+        conn.commit()
+        conn.close()
+        return {"ok": True}
+    except Exception as e:
+        return {"error": str(e)}
+
+@proj.get("/settings")
+async def get_all_settings():
+    try:
+        import sqlite3
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT key, value FROM settings")
+        rows = {r[0]: r[1] for r in c.fetchall()}
+        conn.close()
+        
+        # Legacy fallback
+        if not rows and SETTINGS_FILE.exists():
+            import json
+            return json.loads(SETTINGS_FILE.read_text())
+        return rows
+    except Exception as e:
+        return {}
+
+@proj.post("/settings")
+async def save_all_settings(body: dict):
+    try:
+        import sqlite3
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        for k, v in body.items():
+            c.execute("REPLACE INTO settings (key, value) VALUES (?, ?)", (k, str(v)))
+        conn.commit()
+        conn.close()
+        return {"ok": True}
+    except Exception as e:
+        return {"error": str(e)}
+
 @proj.get("/state")
 async def get_state(project_path: str):
     try:

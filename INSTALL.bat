@@ -40,15 +40,20 @@ echo [3/4] Installing Python dependencies...
 "%CD%\backend\venv\Scripts\python.exe" -m pip install --upgrade pip
 "%CD%\backend\venv\Scripts\python.exe" -m pip install -r backend\requirements.txt
 if %errorlevel% neq 0 (
-    color 0c
     echo.
-    echo ===================================================
-    echo  [CRITICAL ERROR] Python dependencies failed to install!
-    echo ===================================================
-    echo This usually means your version of Python ^(%PY_VER%^) is too new and lacks pre-compiled wheels for certain packages.
-    echo Please uninstall Python %PY_VER%, download Python 3.12 from python.org, delete the 'backendenv' folder, and run INSTALL.bat again.
-    pause
-    goto :eof
+    echo Trying fallback without heavy packages...
+    "%CD%\backend\venv\Scripts\python.exe" -m pip install fastapi[standard] websockets pydantic python-multipart beautifulsoup4 duckduckgo-search openai anthropic groq tiktoken playwright requests
+    if %errorlevel% neq 0 (
+        color 0c
+        echo.
+        echo ===================================================
+        echo  [CRITICAL ERROR] Python dependencies failed to install!
+        echo ===================================================
+        echo This usually means your version of Python ^(%PY_VER%^) is too new and lacks pre-compiled wheels for certain packages.
+        echo Please uninstall Python %PY_VER%, download Python 3.12 from python.org, delete the 'backend\venv' folder, and run INSTALL.bat again.
+        pause
+        goto :eof
+    )
 )
 
 echo.

@@ -1,0 +1,8 @@
+ERROR:    [Errno 98] error while attempting to bind on address ('0.0.0.0', 8000): address already in use
+
+====================================================
+  AiderWeb — Cloud AI Coding
+  Local:    http://localhost:8000
+  Network:  http://192.168.0.2:8000  ← phone/other PC
+====================================================
+
