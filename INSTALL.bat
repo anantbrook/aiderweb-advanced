@@ -32,7 +32,7 @@ if %errorlevel% equ 0 (
 echo.
 echo [2/4] Creating virtual environment...
 if not exist "backend\venv" (
-    py -m venv backend\venv
+    python -m venv backend\venv
 )
 
 echo.
